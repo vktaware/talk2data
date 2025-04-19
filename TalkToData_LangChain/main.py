@@ -2,11 +2,12 @@ import os
 import pyodbc
 import logging
 import json # Import json for parsing LLM output
-import datetime
+import datetime # Ensure the module is imported
+
 import decimal
 import re # Import regex library
 from urllib.parse import quote_plus # Keep for potential future use, but not needed for current approach
-
+import asyncio # For background task
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field # Import Field for better validation
@@ -20,6 +21,65 @@ from langchain_openai import AzureChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser # Add JsonOutputParser
 from langchain_core.pydantic_v1 import BaseModel as LangchainBaseModel # For structured output
+
+# --- Session Management Constants ---
+SESSION_EXPIRY_MINUTES = 30
+MAX_HISTORY_MESSAGES = 20 # Keep last N messages (user + assistant)
+SESSION_CLEANUP_INTERVAL_SECONDS = 600 # Run cleanup every 10 minutes
+
+# --- In-Memory Session Storage ---
+user_sessions = {}
+
+def get_or_create_session(session_id: str) -> dict:
+    """Retrieves or initializes session context for a user session ID."""
+    # --- Import directly inside function --- 
+    from datetime import datetime as dt_now_alias
+    # --- Remove Debug Print ---
+    # print(f"DEBUG (inside func): Type of 'datetime': {type(datetime)}, Value: {datetime}")
+    now = dt_now_alias.now() # Use the aliased import
+    if session_id not in user_sessions:
+        logger.info(f"Creating new session: {session_id}")
+        user_sessions[session_id] = {
+            "history": [], # List of {'role': 'user'|'assistant', 'content': str}
+            "extracted_entities": {"buyer_id": None}, # Store entities like product_name, order_no etc.
+            "pending_action": None, # e.g., 'needs_product', 'needs_order_no'
+            "original_query": None, # Store query that triggered pending_action
+            "last_accessed": now # Use timestamp from aliased import
+        }
+    else:
+        # Update timestamp on access
+        user_sessions[session_id]["last_accessed"] = now
+        # logger.debug(f"Found existing session: {session_id}")
+    return user_sessions[session_id]
+
+# --- Background Session Cleanup Task ---
+async def cleanup_expired_sessions():
+    """Periodically removes sessions that haven't been accessed recently."""
+    # --- Import directly inside function --- 
+    from datetime import datetime as dt_class, timedelta
+    while True:
+        await asyncio.sleep(SESSION_CLEANUP_INTERVAL_SECONDS)
+        now = dt_class.now() # Use aliased import
+        expiry_threshold = now - timedelta(minutes=SESSION_EXPIRY_MINUTES) # timedelta is fine
+        expired_sessions = []
+        
+        # Safely identify expired sessions
+        session_ids = list(user_sessions.keys()) # Copy keys to avoid mutation issues during iteration
+        for session_id in session_ids:
+            session = user_sessions.get(session_id) # Check if still exists
+            if session and session.get("last_accessed", now) < expiry_threshold:
+                expired_sessions.append(session_id)
+                
+        # Remove expired sessions
+        if expired_sessions:
+            logger.info(f"Cleaning up {len(expired_sessions)} expired sessions: {expired_sessions}")
+            for session_id in expired_sessions:
+                try:
+                    del user_sessions[session_id]
+                except KeyError:
+                    logger.warning(f"Session {session_id} already removed during cleanup.")
+        else:
+            logger.debug("Session cleanup ran, no expired sessions found.")
 
 # --- Configuration & Initialization ---
 
@@ -142,6 +202,7 @@ except Exception as e:
 # --- Pydantic Models ---
 class QueryRequest(BaseModel):
     user_query: str
+    session_id: str # Added session ID
 
 class SqlGenOutput(LangchainBaseModel):
     function_name: str = Field(description="The name of the selected SQL function (e.g., 'dbo.t2dFunc_GetBuyerProductDetails' or 'dbo.t2dFunc_GetBuyerSaleOrderDetails').")
@@ -169,6 +230,12 @@ app = FastAPI(
     description="API using LangChain LLM to query iTVFs, with fallback and post-processing.",
 )
 
+# --- Startup Event to Launch Background Task ---
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting background session cleanup task...")
+    asyncio.create_task(cleanup_expired_sessions())
+
 # CORS Configuration (keep as is)
 origins = [
     "http://localhost:3000", # Keep if you might use port 3000
@@ -185,6 +252,9 @@ app.add_middleware(
 # --- Database Execution Helper (with type conversion) ---
 def execute_sql(sql: str):
     """Executes the given SQL using pyodbc and returns results with basic type conversion."""
+    # --- Import directly inside function --- 
+    from datetime import datetime as dt_class, date
+    
     results = []
     conn = None
     try:
@@ -201,7 +271,8 @@ def execute_sql(sql: str):
                 row_dict = {}
                 for i, col in enumerate(columns):
                     val = row[i]
-                    if isinstance(val, (datetime.datetime, datetime.date)):
+                    # Use aliased imports for isinstance check
+                    if isinstance(val, (dt_class, date)):
                         row_dict[col] = val.isoformat()
                     elif isinstance(val, decimal.Decimal):
                         row_dict[col] = float(val)
@@ -246,59 +317,104 @@ def execute_sql(sql: str):
 sql_gen_prompt_template = ChatPromptTemplate.from_messages([
     ("system",
      """You are an expert T-SQL assistant generating SQL Server queries to call specific table-valued functions.
-**Goal:** Based on the user's question and the available function schemas, choose the *single most appropriate* function and generate a `SELECT * FROM FunctionName(...)` statement to call it.
+{history} # Conversation history provides context.
+Context: User may refer to entities mentioned earlier in the history.
+**Goal:** Based on the user's *latest query* (`{question}`) and potentially the *history*, choose the single most appropriate function and generate the SQL to call it.
 **Available Functions & Schemas:**
 {schema}
 **Process:**
-1. **Choose Function:** Decide if the question is about Products (`dbo.t2dFunc_GetBuyerProductDetails`) or Sales Orders (`dbo.t2dFunc_GetBuyerSaleOrderDetails`). State the chosen function name.
-2. **Extract BuyerID:** Identify the mandatory integer `buyerId`. If not found, fail.
-3. **Extract Optional Filters:** Carefully read the user question again and identify if it contains values for ANY of the OPTIONAL parameters belonging to the CHOSEN function (Product Code, Order Number, Description, Brand Name, Status, etc.) Sometimes user may just say product (e.g. what is generic name of product VALCLOVIR 500 mg 10 Tab for buyer 105 here VALCLOVIR 500 mg 10 Tab is product description.).
-4. **Parameter Mapping:** Create a list or mental map of the parameter values identified in steps 2 & 3.
-5. **Handle BuyerOrderNo Exception:**  Buyerorder number may be called as buyer order or order number or order id or just order (e.g. in question what is status of order  344634521843-12345A for buyer 105? 344634521843-12345A is order number). Extract buyerorderno paramter according to regex patterngly. If calling `dbo.t2dFunc_GetBuyerSaleOrderDetails` AND you extracted a value for `@BuyerOrderNo`, ensure the values for `@BuyerOrderDateStart` and `@BuyerOrderDateEnd` are set to `NULL`, overriding any other date logic for those two specific parameters.
-6. **Generate SQL (CRITICAL):** Construct the `SELECT * FROM ChosenFunctionName(...)` statement using POSITIONAL parameters.
-    - Provide the extracted `@buyerId` value first.
-    - **VERY IMPORTANT:** You MUST provide exactly the correct total number of arguments inside the parentheses for the chosen function:
-        - `dbo.t2dFunc_GetBuyerProductDetails` requires **31** total arguments.
-        - `dbo.t2dFunc_GetBuyerSaleOrderDetails` requires **23** total arguments.
-    - For the chosen function, provide values for ALL subsequent parameters in the exact order they appear in the schema.
-    - If you extracted a value for an optional parameter in step 3, place it in its correct position (quoting strings with N'...').
-    - If you did NOT extract a value for an optional parameter, you MUST place `NULL` in its position.
-    - **FAILURE TO PROVIDE THE EXACT NUMBER OF ARGUMENTS (values or NULLs) WILL CAUSE AN ERROR.**
-7. **Format Output:** Respond with ONLY a JSON object containing THREE keys: `function_name` (the chosen function's name as string), `sql` (the generated `SELECT * FROM ...` statement as a string), and `buyer_id` (the extracted integer buyer ID).
-**Example Output:**
+1. **Analyze:** Understand the latest user query in the context of the history.
+2. **Choose Function:** Select either `dbo.t2dFunc_GetBuyerProductDetails` or `dbo.t2dFunc_GetBuyerSaleOrderDetails`.
+3. **Extract Parameters:** Identify the mandatory `@buyerId` and any optional parameters present in the query or implied by the history for the chosen function.
+4. **Generate SQL:** Construct the `SELECT * FROM ChosenFunctionName(...)` statement using POSITIONAL arguments as specified in the schema. Ensure the *exact* number of arguments (values or `NULL`) is provided (31 for ProductDetails, 23 for SaleOrderDetails).
+5. **Format Output (CRITICAL):** Your response MUST be **ONLY** a single JSON object containing THREE keys: `function_name` (string), `sql` (string), and `buyer_id` (integer). Do NOT include any explanations, introductory text, markdown formatting (like ```json), or anything else outside the single JSON object.
+
+**Example of CORRECT Output:**
 ```json
-{{"function_name": "dbo.t2dFunc_GetBuyerSaleOrderDetails", "sql": "SELECT * FROM dbo.t2dFunc_GetBuyerSaleOrderDetails(105, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, N'3446843-23365610A', NULL, NULL, NULL);", "buyer_id": 105}}
-```"""
+{{"function_name": "dbo.t2dFunc_GetBuyerProductDetails", "sql": "SELECT * FROM dbo.t2dFunc_GetBuyerProductDetails(105, NULL, N'Some Product', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);", "buyer_id": 105}}
+```
+
+**Example of INCORRECT Output (Do NOT do this):**
+Based on your request, I will use the Product Details function. Here is the JSON:
+```json
+{{"function_name": ... , "sql": ... , "buyer_id": ...}}
+```
+This query should give you the results.
+
+**Strict Output Rule:** Respond ONLY with the valid JSON object and nothing else.
+"""
      ),
-    ("human", "{question}"),
+    ("human", "{question}"), # This is the latest user query
 ])
 
 
 # --- Prompt Template (for Data Processing - Updated with Context) ---
 data_processing_prompt_template = ChatPromptTemplate.from_messages([
     ("system",
-     """You are an assistant processing database results to answer a user's question.
-You will be given the original question, the type of data retrieved (Product Details or Sales Order Details), and a list of data records (JSON string).
-**Important Context:** Sales Order details are limited to the last 3 months of data from the source.
-**Your Task:**
-1. **Analyze Question & Data Type:** Understand the user's specific request and the type of data provided.
-2. **Check for Monograph (Product Data):** IF data type is 'Product Details' AND user asked for ingredients/monograph, check 'Monograph4'/'MonographDesc' columns. If a path is found, state that the details are in the file: [path]. Do not summarize other fields.
-3. **Check for Date Limit (Sales Order Data):** IF data type is 'Sales Order Details' AND the user asked for data explicitly older than 3 months (e.g., 'last year', 'show orders from 6 months ago'), first inform them the results are limited to the last 3 months due to system constraints, then proceed to answer based on the available data within that 3-month window if relevant. If the user asked about a specific Order Number, do not mention the 3-month limit unless specifically relevant to the answer.
-4. **General Processing:** Otherwise, analyze the records to extract the specific information needed for the user's question. Focus on relevant columns based on the question (e.g., 'Rate' for cost, 'OrderStatus' for status, 'ProductCode', 'BuyerOrderNo', 'ETADate' etc.).
-5. **Format Answer:** Present the answer clearly and concisely. If the specific information isn't in the records, state that. Base the answer ONLY on the provided records. Use formatting like lists or tables if it improves readability for multiple results.
----
-
-Data Type: {data_type}
-
-Database Records (JSON format):
-{db_results}
-
----
-"""
+     """You are an assistant processing database results...
+     {history} # Placeholder for history injection
+     Analyze the user's *original question* in the context of the *conversation history* and the provided *database records* to formulate your answer.
+     ...
+     Data Type: {data_type}
+     Database Records (JSON format):
+     {db_results}
+     ---
+     """
      ),
-    ("human", "Original Question: {question}")
+    ("human", "Original Question: {question}") # 'question' here should be the initiating query of the turn
 ])
 
+
+# --- Helper function for simple entity extraction (Example) ---
+def extract_entities(query: str, session_entities: dict):
+    """Placeholder for entity extraction logic. 
+       Updates session_entities in place.
+       Returns True if key entities seem present, False otherwise.
+    """
+    # Very basic extraction for now - enhance later with regex/NER
+    updated_entities = session_entities.copy()
+    query_lower = query.lower()
+    
+    # Attempt to find order number
+    order_match = re.search(r'(order|buyer order)(?:\s+no|\s+number|\s+id)?\s+([a-zA-Z0-9\-]+)', query, re.IGNORECASE)
+    if order_match:
+        updated_entities['order_no'] = order_match.group(2)
+        logger.info(f"Extractor found order_no: {updated_entities['order_no']}")
+
+    # Attempt to find potential product descriptions/codes (simple example)
+    # This needs significant improvement - consider keywords or patterns
+    # Example: look for something after "product"
+    product_match = re.search(r'product\s+(.+?)(?:\s+for|\s+buyer|$)', query, re.IGNORECASE)
+    if product_match:
+         potential_product = product_match.group(1).strip()
+         # Avoid overwriting if already explicitly set by user response
+         if not updated_entities.get('product_name'): 
+              updated_entities['product_name'] = potential_product
+              logger.info(f"Extractor found potential product_name: {updated_entities['product_name']}")
+
+    # TODO: Add extraction for other entities like product code, etc.
+
+    # Update the session entities
+    session_entities.update(updated_entities)
+    
+    # Basic check if *something* relevant seems present (needs improvement)
+    if updated_entities.get('order_no') or updated_entities.get('product_name') or updated_entities.get('product_code'):
+        return True
+    return False
+
+# --- Format History for LLM --- 
+def format_history_for_llm(history: list) -> str:
+    """Formats the history list into a string for the LLM prompt."""
+    if not history:
+        return "No history available."
+    
+    formatted = "\n--- Conversation History ---\n"
+    for turn in history:
+        role = turn.get('role', 'unknown').capitalize()
+        content = turn.get('content', '')
+        formatted += f"{role}: {content}\n"
+    formatted += "--- End History ---\n"
+    return formatted
 
 # --- API Endpoints ---
 
@@ -346,260 +462,365 @@ async def login_user(request: LoginRequest):
 
 @app.post("/api/query", response_model=QueryResponse)
 async def query_database(request: QueryRequest):
-    logger.info(f"Received query: '{request.user_query}'")
+    logger.info(f"Query received: '{request.user_query}' for session: {request.session_id}")
+    session = get_or_create_session(request.session_id)
+    current_buyer_id = session["extracted_entities"].get("buyer_id") # Get buyer_id safely
 
+    # --- Ensure Buyer ID exists (Connect this to login later) ---
+    if current_buyer_id is None:
+         # Temporary extraction if login hasn't happened
+         buyer_match = re.search(r'buyer\s+id\s+is\s+(\d+)', request.user_query, re.IGNORECASE)
+         if buyer_match:
+             current_buyer_id = int(buyer_match.group(1))
+             session["extracted_entities"]["buyer_id"] = current_buyer_id
+             logger.info(f"Temp extracted buyer_id {current_buyer_id} for session {request.session_id}")
+         else:
+            # If no buyer ID in session or query, ask for it (simulating a missing mandatory param)
+            # Note: In the final version, this check should happen after login.
+            session["history"].append({"role": "user", "content": request.user_query})
+            follow_up = "I need your Buyer ID to proceed. Could you please provide it?"
+            session["history"].append({"role": "assistant", "content": follow_up})
+            # We aren't setting pending_action here as BuyerID is fundamental / handled by login flow ideally
+            return QueryResponse(query=None, answer=follow_up, error="Buyer ID Missing")
+
+    # --- State Machine Logic ---
+    user_query = request.user_query
+    follow_up_response = None 
+
+    if session["pending_action"]:
+        logger.info(f"Session {request.session_id} has pending action: {session['pending_action']}")
+        pending_action = session["pending_action"]
+        original_query = session["original_query"]
+        user_response_to_follow_up = user_query # Current query is the answer
+
+        # Add user's response to history
+        session["history"].append({"role": "user", "content": user_response_to_follow_up})
+
+        # Try to extract the missing info from the user's response
+        if pending_action == 'needs_product':
+            # Simplistic: Assume the response *is* the product name/code
+            # A more robust approach would use regex/NER on user_response_to_follow_up
+            session["extracted_entities"]['product_name'] = user_response_to_follow_up 
+            logger.info(f"Extracted product '{user_response_to_follow_up}' from follow-up response.")
+        elif pending_action == 'needs_order_no':
+            # Simplistic: Assume response *is* the order number
+            session["extracted_entities"]['order_no'] = user_response_to_follow_up 
+            logger.info(f"Extracted order_no '{user_response_to_follow_up}' from follow-up response.")
+        # TODO: Add cases for other pending actions
+
+        # Clear pending state and use original query for context
+        session["pending_action"] = None
+        session["original_query"] = None
+        # We will now proceed using the original_query + updated entities
+        # For the LLM, the history now contains user_query -> follow_up -> user_response
+        # We don't necessarily need to reconstruct the query string, the history provides context
+        logger.info(f"Proceeding with original query context after getting follow-up info.")
+        # Fall through to the main processing logic below
+
+    else: # No pending action, process the query normally
+        # Add current user query to history *before* processing
+        session["history"].append({"role": "user", "content": user_query})
+
+        # Attempt to extract entities from the current query
+        extract_entities(user_query, session["extracted_entities"])
+        logger.info(f"Session entities after extraction: {session['extracted_entities']}")
+
+        # --- Check if we have enough info (Example Logic) ---
+        # Basic intent detection (can be improved with LLM later if needed)
+        query_lower = user_query.lower()
+        is_product_query = any(k in query_lower for k in ["product", "generic", "ingredient", "rate", "brand"])
+        is_order_query = any(k in query_lower for k in ["order", "status", "eta", "shipping"])
+
+        needs_info = None
+        if is_product_query and not (session["extracted_entities"].get('product_name') or session["extracted_entities"].get('product_code')):
+            needs_info = 'product'
+            follow_up_response = "Which product are you asking about? Please provide the name or code."
+            session["pending_action"] = 'needs_product'
+        elif is_order_query and not session["extracted_entities"].get('order_no'):
+             # Check history first - maybe order was mentioned?
+             # TODO: Add logic to check history for order no before asking
+             needs_info = 'order_no'
+             follow_up_response = "What is the Order Number you are referring to?"
+             session["pending_action"] = 'needs_order_no'
+        # TODO: Add more checks for other scenarios
+
+        if needs_info:
+            logger.warning(f"Query missing information: {needs_info}. Asking follow-up.")
+            session["original_query"] = user_query # Store the query that needs info
+            session["history"].append({"role": "assistant", "content": follow_up_response})
+            return QueryResponse(query=None, answer=follow_up_response)
+
+    # --- If we have enough info (or got it from follow-up), proceed to LLM --- 
+    logger.info("Sufficient information detected or obtained. Proceeding to LLM SQL generation.")
+    
     if initialization_error or llm is None:
-        error_detail = initialization_error or "LLM component not initialized."
-        logger.error(f"Service unavailable: {error_detail}")
-        raise HTTPException(status_code=503, detail=f"Service unavailable: {error_detail}")
-
-    generated_sql_attempt1 = None
-    extracted_buyer_id = None
-    chosen_function_name = None
-    sql_to_execute = None
-    results = []
-    final_answer = None
-    execution_error = None
+        raise HTTPException(status_code=503, detail=f"Service unavailable: {initialization_error or 'LLM not initialized'}")
 
     try:
-        # == Step 1: Generate Initial SQL (Attempt 1) ==
-        logger.info("Generating initial SQL query (Attempt 1)...")
+        generated_sql_attempt1 = None
+        chosen_function_name = None
+        sql_to_execute = None
+        results = []
+        final_answer = None
+        execution_error = None
         
-        # Define the chain to get raw string output first
+        # == Step 1: Generate SQL using LLM ==
+        formatted_history = format_history_for_llm(session["history"])
+        # Use the latest user message from history as the primary question for SQL gen
+        # History itself provides context for pronouns etc.
+        latest_user_query_for_llm = ""
+        for msg in reversed(session["history"]):
+            if msg.get('role') == 'user':
+                latest_user_query_for_llm = msg.get('content')
+                break
+        if not latest_user_query_for_llm:
+            latest_user_query_for_llm = user_query # Fallback if history is weird
+            logger.warning("Could not find last user message in history, using current request query for LLM.")
+            
+        llm_input = {
+            "schema": MANUAL_SCHEMAS,
+            "question": latest_user_query_for_llm, 
+            "history": formatted_history
+        }
+        logger.info(f"LLM Input for SQL Gen: {llm_input}")
+
         sql_gen_chain_raw = sql_gen_prompt_template | llm | StrOutputParser()
+        raw_llm_output = sql_gen_chain_raw.invoke(llm_input)
+        logger.info(f"Raw LLM output for SQL generation: {raw_llm_output}")
         
-        raw_llm_output = None
+        # --- Parse and Validate LLM SQL Output --- 
         parsed_output_dict = None
         try:
-            # Invoke chain to get raw string output
-            raw_llm_output = sql_gen_chain_raw.invoke({
-                "schema": MANUAL_SCHEMAS, # Use combined schemas
-                "question": request.user_query
-            })
-            logger.info(f"Raw LLM output for SQL generation: {raw_llm_output}")
-
-            # Attempt to parse the raw string as JSON
             if raw_llm_output:
                 json_str = raw_llm_output.strip().strip("```json").strip("```").strip()
                 parsed_output_dict = json.loads(json_str)
             else:
-                 raise ValueError("LLM returned empty output.")
-
-            # Validate the parsed dictionary has expected keys
-            if not isinstance(parsed_output_dict, dict) or 'sql' not in parsed_output_dict or 'buyer_id' not in parsed_output_dict or 'function_name' not in parsed_output_dict:
-                raise ValueError(f"Parsed JSON does not contain required keys ('sql', 'buyer_id', 'function_name'). Parsed: {parsed_output_dict}")
-
-            # --- Extract data using dictionary access --- 
-            chosen_function_name = parsed_output_dict.get('function_name') 
+                raise ValueError("LLM returned empty output for SQL generation.")
+                
+            if not isinstance(parsed_output_dict, dict) or 'sql' not in parsed_output_dict or 'function_name' not in parsed_output_dict:
+                 raise ValueError(f"Parsed JSON from SQL LLM does not contain required keys ('sql', 'function_name'). Parsed: {parsed_output_dict}")
+                 
+            chosen_function_name = parsed_output_dict.get('function_name')
             generated_sql_attempt1 = parsed_output_dict.get('sql')
-            # Ensure buyer_id is an integer
+            sql_to_execute = generated_sql_attempt1 # Initial SQL
+            
             try:
-                extracted_buyer_id = int(parsed_output_dict.get('buyer_id'))
-            except (ValueError, TypeError):
-                raise ValueError(f"Extracted buyer_id '{parsed_output_dict.get('buyer_id')}' is not a valid integer.")
-            
-            sql_to_execute = generated_sql_attempt1 # Start with attempt 1
-            
-            # Further validation
+                llm_buyer_id = int(parsed_output_dict.get('buyer_id'))
+                if llm_buyer_id != current_buyer_id:
+                     logger.warning(f"LLM extracted buyer ID {llm_buyer_id} differs from session buyer ID {current_buyer_id}. Using session ID.")
+            except (ValueError, TypeError, KeyError):
+                pass 
+
             if not chosen_function_name or chosen_function_name not in ["dbo.t2dFunc_GetBuyerProductDetails", "dbo.t2dFunc_GetBuyerSaleOrderDetails"]:
                  raise ValueError("LLM did not return a valid function_name in JSON.")
             if not generated_sql_attempt1 or not isinstance(generated_sql_attempt1, str):
                  raise ValueError("LLM did not return a valid SQL string in JSON.")
-            if extracted_buyer_id is None:
-                 raise ValueError("LLM did not return a valid integer buyer_id in JSON.")
-                 
-            logger.info(f"Chosen Function: {chosen_function_name}")
-            logger.info(f"Attempt 1 SQL (raw from LLM): {generated_sql_attempt1}")
-            logger.info(f"Extracted Buyer ID: {extracted_buyer_id}")
 
         except json.JSONDecodeError as json_err:
-            logger.error(f"Failed to decode LLM output as JSON: {json_err}. Raw output: {raw_llm_output}", exc_info=True)
+            logger.error(f"Failed to decode LLM SQL output as JSON: {json_err}. Raw output: {raw_llm_output}", exc_info=True)
             raise HTTPException(status_code=400, detail=f"Failed to parse LLM response for SQL generation. Error: {json_err}")
         except Exception as gen_ex:
-            logger.error(f"Failed during initial SQL generation/parsing: {gen_ex}. Raw output: {raw_llm_output}", exc_info=True)
+            logger.error(f"Failed during SQL generation/parsing: {gen_ex}. Raw output: {raw_llm_output}", exc_info=True)
             raise HTTPException(status_code=400, detail=f"Failed to generate/parse initial SQL query: {gen_ex}")
-        
+
         # == Step 1a: Attempt BuyerOrderNo Override (Python Regex) ==
         overridden_sql = generated_sql_attempt1 # Start with LLM's SQL
         if chosen_function_name == "dbo.t2dFunc_GetBuyerSaleOrderDetails":
             try:
-                # Try to find BuyerOrderNo pattern in the original user query
-                # Pattern looks for 'order', 'order no', 'order number', etc. followed by the identifier
-                order_no_match = re.search(r'(?:order|buyer order)(?:\s+no|\s+number|\s+id)?\s+([a-zA-Z0-9\-]+)', request.user_query, re.IGNORECASE)
+                latest_user_query = latest_user_query_for_llm # Use the query passed to LLM
+                order_no_match = re.search(r'(?:order|buyer order)(?:\s+no|\s+number|\s+id)?\s+([a-zA-Z0-9\-]+)', latest_user_query, re.IGNORECASE)
                 
                 if order_no_match:
                     extracted_order_no_py = order_no_match.group(1)
                     logger.info(f"Python Regex extracted potential BuyerOrderNo: {extracted_order_no_py}")
+                    quoted_order_no = f"N'{extracted_order_no_py}'"
                     
-                    # Now check if the LLM put NULL in the BuyerOrderNo slot (20th param total, index 19 after splitting)
-                    # Use regex to find content within the main function call parentheses
                     sql_match = re.search(r"\((.*)\)", generated_sql_attempt1)
                     if sql_match:
                         params_list = [p.strip() for p in sql_match.group(1).split(',')]
-                        buyer_order_no_param_index = 19 # 20th parameter, 0-indexed
+                        buyer_order_no_param_index = 19 
+                        date_start_index = 21 
+                        date_end_index = 22   
+                        logger.debug(f"[Step 1a Debug] Parsed {len(params_list)} params. Target index: {buyer_order_no_param_index}")
+
+                        correct_slot_is_null = False
+                        if len(params_list) > buyer_order_no_param_index:
+                            correct_slot_is_null = params_list[buyer_order_no_param_index].upper() == 'NULL'
+                        logger.debug(f"[Step 1a Debug] Correct slot ({buyer_order_no_param_index}) is NULL: {correct_slot_is_null}")
                         
-                        if len(params_list) > buyer_order_no_param_index and params_list[buyer_order_no_param_index].upper() == 'NULL':
-                            logger.warning(f"Overriding LLM's NULL for BuyerOrderNo with Python extracted value: {extracted_order_no_py}")
-                            params_list[buyer_order_no_param_index] = f"N'{extracted_order_no_py}'" # Add N'...' quoting
-                            
-                            # **Re-apply Special Handling**: Ensure DateStart/End are NULL if BuyerOrderNo is provided
-                            date_start_index = 21 # 22nd param
-                            date_end_index = 22   # 23rd param
-                            if len(params_list) > date_end_index: # Check indices are valid
+                        found_at_wrong_index = -1
+                        for i, param in enumerate(params_list):
+                            normalized_param = param.strip("N' ").lower() # Added space stripping
+                            extracted_lower = extracted_order_no_py.lower()
+                            if i != buyer_order_no_param_index and normalized_param == extracted_lower:
+                                found_at_wrong_index = i
+                                logger.debug(f"[Step 1a Debug] Found extracted order# ('{extracted_lower}') at wrong index: {found_at_wrong_index} (value: '{param}')")
+                                break
+                        logger.debug(f"[Step 1a Debug] Index found at wrong location: {found_at_wrong_index}")
+
+                        if correct_slot_is_null and found_at_wrong_index != -1:
+                            logger.info("[Step 1a Debug] Entering block to fix misplaced BuyerOrderNo...")
+                            # Scenario: LLM put NULL in correct slot BUT put the value in the wrong slot
+                            logger.warning(f"Fixing misplaced BuyerOrderNo: Found '{params_list[found_at_wrong_index]}' at index {found_at_wrong_index}, expected at {buyer_order_no_param_index}.")
+                            params_list[buyer_order_no_param_index] = quoted_order_no
+                            params_list[found_at_wrong_index] = 'NULL' # Clear the wrong slot
+                            # Ensure dates are NULL
+                            if len(params_list) > date_end_index:
                                 params_list[date_start_index] = 'NULL'
                                 params_list[date_end_index] = 'NULL'
-                                logger.info("Ensured DateStart/End are NULL due to BuyerOrderNo override.")
-                            
-                            # Reconstruct the SQL string
-                            # Find the function name part to keep prefix
+                                logger.info("Ensured DateStart/End are NULL due to BuyerOrderNo fix.")
+                            # Reconstruct SQL
                             prefix_match = re.match(r"(.*?\()", generated_sql_attempt1)
                             if prefix_match:
                                 prefix = prefix_match.group(1)
                                 overridden_sql = prefix + ", ".join(params_list) + ");"
-                                logger.info(f"SQL after BuyerOrderNo override: {overridden_sql}")
+                                logger.info(f"SQL after BuyerOrderNo fix: {overridden_sql}")
                             else: 
-                                logger.error("Could not reconstruct SQL after override (prefix match failed).")
-                                overridden_sql = generated_sql_attempt1 # Fallback if reconstruction fails
+                                logger.error("Could not reconstruct SQL after fixing misplaced BuyerOrderNo.")
+                        elif correct_slot_is_null:
+                            logger.info("[Step 1a Debug] Entering block for standard NULL override...")
+                            # Scenario: LLM put NULL in correct slot, value not found elsewhere (original override case)
+                            logger.warning(f"Overriding LLM's NULL for BuyerOrderNo with Python extracted value: {extracted_order_no_py}")
+                            if len(params_list) > buyer_order_no_param_index:
+                                params_list[buyer_order_no_param_index] = quoted_order_no
+                                # Ensure dates are NULL
+                                if len(params_list) > date_end_index:
+                                    params_list[date_start_index] = 'NULL'
+                                    params_list[date_end_index] = 'NULL'
+                                    logger.info("Ensured DateStart/End are NULL due to BuyerOrderNo override.")
+                                # Reconstruct SQL
+                                prefix_match = re.match(r"(.*?\()", generated_sql_attempt1)
+                                if prefix_match:
+                                    prefix = prefix_match.group(1)
+                                    overridden_sql = prefix + ", ".join(params_list) + ");"
+                                    logger.info(f"SQL after BuyerOrderNo override: {overridden_sql}")
+                                else: 
+                                    logger.error("Could not reconstruct SQL after BuyerOrderNo override.")
+                            else:
+                                logger.error(f"Parameter list too short to apply BuyerOrderNo override at index {buyer_order_no_param_index}.")
+                        elif found_at_wrong_index != -1:
+                            logger.warning("[Step 1a Debug] Found at wrong index, but correct slot was NOT NULL. No changes made.")
                         else:
-                            logger.info("LLM provided a non-NULL BuyerOrderNo or param index invalid, no override needed.")
+                            logger.info("[Step 1a Debug] No condition met for override or fix.")
                     else:
                          logger.warning("Could not parse params from LLM SQL to check for BuyerOrderNo override.")
                 else:
-                    logger.info("Python Regex did not find BuyerOrderNo pattern in user query.")
+                    logger.info("Python Regex did not find BuyerOrderNo pattern in latest user query.")
 
             except Exception as override_ex:
-                logger.error(f"Error during BuyerOrderNo override attempt: {override_ex}", exc_info=True)
-                overridden_sql = generated_sql_attempt1 # Fallback to original SQL on error
+                logger.error(f"Error during BuyerOrderNo override/fix attempt: {override_ex}", exc_info=True)
+                # Keep overridden_sql as generated_sql_attempt1 on error
                 
-        # Pass the potentially overridden SQL to the next step
-        generated_sql_attempt1 = overridden_sql
+        generated_sql_attempt1 = overridden_sql # Pass potentially fixed/overridden SQL to next step
 
-        # == Step 1b: Validate and Correct Parameter Count ==
+        # Initialize sql_to_execute with the result from Step 1a
+        sql_to_execute = generated_sql_attempt1 
+
+        # == Step 1b: Parameter Count Correction ==
+        # (This step now runs on the potentially fixed SQL from Step 1a, held in generated_sql_attempt1/sql_to_execute)
         required_param_count = 0
         if chosen_function_name == "dbo.t2dFunc_GetBuyerProductDetails":
             required_param_count = 31
         elif chosen_function_name == "dbo.t2dFunc_GetBuyerSaleOrderDetails":
             required_param_count = 23
         
-        corrected_sql = generated_sql_attempt1 # Start with the original
         if required_param_count > 0:
             try:
-                # Use regex to find content within the main function call parentheses
-                match = re.search(r"\((.*)\)", generated_sql_attempt1)
+                # Use generated_sql_attempt1 (the result of Step 1a) for the check
+                match = re.search(r"\((.*)\)", generated_sql_attempt1) 
                 if match:
                     params_str = match.group(1).strip()
-                    # Count parameters by splitting on comma, handle empty string case
                     actual_param_count = len(params_str.split(',')) if params_str else 0 
-                    logger.info(f"Required params: {required_param_count}, Found params: {actual_param_count}")
+                    logger.info(f"Required params: {required_param_count}, Found params: {actual_param_count} in SQL from Step 1a")
 
                     if actual_param_count < required_param_count:
                         missing_params = required_param_count - actual_param_count
-                        logger.warning(f"LLM generated insufficient parameters. Adding {missing_params} NULLs.")
-                        # Find the position of the last closing parenthesis
+                        logger.warning(f"Correcting insufficient parameters: Adding {missing_params} NULLs.")
+                        # Modify sql_to_execute based on check of generated_sql_attempt1
                         last_paren_index = generated_sql_attempt1.rfind(')')
                         if last_paren_index != -1:
-                            # Construct the NULLs to add
                             nulls_to_add = ", NULL" * missing_params
-                            # If there were existing params, add comma before NULLs
                             if actual_param_count > 0: 
-                                corrected_sql = generated_sql_attempt1[:last_paren_index] + nulls_to_add + generated_sql_attempt1[last_paren_index:]
-                            else: # Handle case where LLM might generate func() with no params
-                                corrected_sql = generated_sql_attempt1[:last_paren_index] + "NULL" * missing_params # Add first NULL without comma
+                                sql_to_execute = generated_sql_attempt1[:last_paren_index] + nulls_to_add + generated_sql_attempt1[last_paren_index:]
+                            else: 
+                                temp_sql = generated_sql_attempt1[:last_paren_index] + "NULL" * missing_params
                                 if missing_params > 1:
-                                     corrected_sql = corrected_sql[:last_paren_index] + (", NULL" * (missing_params - 1)) + corrected_sql[last_paren_index:]
-                            logger.info(f"Corrected SQL: {corrected_sql}")
+                                     temp_sql = temp_sql + (", NULL" * (missing_params - 1))
+                                sql_to_execute = temp_sql + generated_sql_attempt1[last_paren_index:]
+                            logger.info(f"Corrected SQL (Added NULLs): {sql_to_execute}")
                         else:
-                            logger.error("Could not find closing parenthesis in generated SQL to correct params.")
-                            # Fallback or raise error - maybe use original SQL and let DB fail?
-                            corrected_sql = generated_sql_attempt1 
+                            logger.error("Could not find closing parenthesis in generated SQL to add NULLs.")
+                            # sql_to_execute remains unchanged from Step 1a result
                     elif actual_param_count > required_param_count:
-                        logger.warning(f"LLM generated TOO MANY parameters ({actual_param_count} vs {required_param_count}). Truncating extra parameters.")
-                        # Truncate the list of parameters
+                        logger.warning(f"Correcting excessive parameters: Truncating extra parameters.")
+                        # Modify sql_to_execute based on check of generated_sql_attempt1
                         params_list = [p.strip() for p in params_str.split(',')]
                         truncated_params_list = params_list[:required_param_count]
-                        
-                        # Reconstruct the SQL string with the correct number of parameters
-                        # Find the function name part to keep prefix
                         prefix_match = re.match(r"(.*?\()", generated_sql_attempt1)
                         if prefix_match:
                             prefix = prefix_match.group(1)
-                            corrected_sql = prefix + ", ".join(truncated_params_list) + ");"
-                            logger.info(f"Corrected SQL (truncated): {corrected_sql}")
+                            sql_to_execute = prefix + ", ".join(truncated_params_list) + ");"
+                            logger.info(f"Corrected SQL (Truncated): {sql_to_execute}")
                         else:
-                            logger.error("Could not reconstruct SQL after truncating parameters (prefix match failed).")
-                            corrected_sql = generated_sql_attempt1 # Fallback if reconstruction fails
-                    else:
-                         # Count is correct, no changes needed
-                         corrected_sql = generated_sql_attempt1 # Ensure corrected_sql has the right value
-                         pass
+                            logger.error("Could not reconstruct SQL after truncating parameters.")
+                            # sql_to_execute remains unchanged from Step 1a result
+                    # else: Parameter count is correct, sql_to_execute remains unchanged
+                         
                 else:
-                     logger.warning("Could not parse parameters using regex from generated SQL.")
-                     # Use original SQL and let DB handle error
-                     corrected_sql = generated_sql_attempt1
+                     logger.warning("Could not parse parameters using regex from SQL from Step 1a.")
+                     # sql_to_execute remains unchanged
 
             except Exception as corr_ex:
                  logger.error(f"Error during parameter count correction: {corr_ex}", exc_info=True)
-                 corrected_sql = generated_sql_attempt1 # Fallback to original SQL on correction error
+                 # sql_to_execute remains unchanged
         
-        # Use the potentially corrected SQL for execution
-        generated_sql_attempt1 = corrected_sql
-        sql_to_execute = generated_sql_attempt1 # Update the sql_to_execute as well
-
-        # == Step 2: Execute Initial SQL (Attempt 1) ==
+        # == Step 2: Execute SQL ==
         try:
-            results = execute_sql(generated_sql_attempt1)
-            logger.info(f"Attempt 1 executed. Rows returned: {len(results)}")
+            results = execute_sql(sql_to_execute)
+            logger.info(f"Attempt 1 SQL executed. Rows returned: {len(results)}")
         except ConnectionError as db_ex_1:
             logger.warning(f"Attempt 1 DB execution failed: {db_ex_1}")
             execution_error = str(db_ex_1)
             results = []
 
-        # == Step 2b: Fallback Execution (Attempt 2) if needed ==
-        # Fallback ONLY if attempt 1 returned NO rows (not if it errored)
+        # == Step 2b: Fallback Execution (BuyerID only) ==
         if not results and execution_error is None:
              logger.warning("Attempt 1 yielded no results. Triggering fallback (BuyerID only).")
-             if extracted_buyer_id is not None and chosen_function_name is not None:
+             if current_buyer_id is not None and chosen_function_name is not None:
                 # Construct fallback SQL reliably for the *chosen* function
                 if chosen_function_name == "dbo.t2dFunc_GetBuyerProductDetails":
-                    num_optional_for_fallback = 30 # 31 total - 1 buyerId
+                    num_optional_for_fallback = 30 
                 elif chosen_function_name == "dbo.t2dFunc_GetBuyerSaleOrderDetails":
-                    num_optional_for_fallback = 22 # <-- Corrected: 23 total - 1 buyerId = 22 optional
+                    num_optional_for_fallback = 22 
                 else:
-                    # Should not happen due to validation, but safety check
                     logger.error(f"Unknown function name '{chosen_function_name}' during fallback construction.")
                     raise HTTPException(status_code=500, detail="Internal configuration error during fallback.")
 
                 null_params = ", ".join(['NULL'] * num_optional_for_fallback)
-                fallback_sql = f"SELECT * FROM {chosen_function_name}({extracted_buyer_id}, {null_params});"
-
+                fallback_sql = f"SELECT * FROM {chosen_function_name}({current_buyer_id}, {null_params});"
                 sql_to_execute = fallback_sql # Update the query to be executed/returned
                 logger.info(f"Constructed Fallback SQL: {fallback_sql}")
                 try:
                     results = execute_sql(fallback_sql)
                     logger.info(f"Fallback Attempt 2 executed. Rows returned: {len(results)}")
-                    # Keep execution_error as None since fallback didn't error here
                 except ConnectionError as db_ex_2:
                     logger.error(f"Fallback Attempt 2 DB execution also failed: {db_ex_2}")
                     execution_error = str(db_ex_2) # Store fallback error
                     results = []
              else:
-                logger.error("Cannot trigger fallback: BuyerID or Chosen Function Name missing from Step 1.")
-                # This implies Step 1 failed badly, use its error
-                raise HTTPException(status_code=400, detail="Failed to generate initial query details needed for fallback.")
+                logger.error("Cannot trigger fallback: BuyerID or Chosen Function Name missing.")
+                # Fallback failed, proceed to answer generation with empty results
 
         # == Step 3: Process Results with LLM ==
         data_type_context = "Product Details" if chosen_function_name == "dbo.t2dFunc_GetBuyerProductDetails" else "Sales Order Details"
 
         if not results and execution_error is None:
-            # If results are still empty after fallback (or if fallback wasn't needed)
-            final_answer = f"I couldn't find any {data_type_context.lower()} matching your specific criteria (Buyer ID: {extracted_buyer_id})."
+            final_answer = f"I couldn't find any {data_type_context.lower()} matching your specific criteria (Buyer ID: {current_buyer_id})."
             if chosen_function_name == "dbo.t2dFunc_GetBuyerSaleOrderDetails":
                  final_answer += " Note: Sales order data is limited to the last 3 months."
         elif execution_error:
-             # If the final execution attempt resulted in an error
              final_answer = f"I encountered a database error trying to retrieve the {data_type_context.lower()}. Error: {execution_error}"
         else:
-            # Process the results (from Attempt 1 or Fallback Attempt 2)
             logger.info(f"Processing {data_type_context} results with LLM...")
             MAX_ROWS_FOR_LLM = 50
             results_subset = results[:MAX_ROWS_FOR_LLM]
@@ -612,26 +833,70 @@ async def query_database(request: QueryRequest):
                 logger.error(f"Could not serialize database results to JSON: {json_err}")
                 raise HTTPException(status_code=500, detail="Failed to process database results.")
 
-            data_processing_chain = data_processing_prompt_template | llm | StrOutputParser()
-            final_answer = data_processing_chain.invoke({
+            formatted_history = format_history_for_llm(session["history"])
+            # Use the query that *initiated* this turn for the 'question' context
+            initiating_query = session["original_query"] or user_query
+            data_processing_input = {
                 "db_results": results_json_str,
-                "question": request.user_query,
-                "data_type": data_type_context
-            })
+                "question": initiating_query, 
+                "data_type": data_type_context,
+                "history": formatted_history
+            }
+            data_processing_chain = data_processing_prompt_template | llm | StrOutputParser()
+            final_answer = data_processing_chain.invoke(data_processing_input)
             logger.info(f"LLM processed answer: {final_answer}")
 
-        # == Step 4: Return successful response ==
-        # Return the SQL that was *actually executed* last (or attempted last if error)
-        return QueryResponse(query=sql_to_execute, answer=final_answer, error=None)
+        # Add assistant response (either final answer or follow-up) to history
+        assistant_response_content = final_answer if final_answer is not None else follow_up_response
+        if assistant_response_content:
+             session["history"].append({"role": "assistant", "content": assistant_response_content})
+        else:
+             # Handle cases where no response was generated (e.g., unexpected errors before response)
+             logger.error("No assistant response content to add to history.") # Or add a generic error message
 
-    # == Error Handling for overall process ==
+        # --- Enforce History Limit ---
+        if len(session["history"]) > MAX_HISTORY_MESSAGES:
+            logger.warning(f"History limit ({MAX_HISTORY_MESSAGES}) exceeded for session {request.session_id}. Truncating.")
+            session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
+        
+        # Log final history size for debugging
+        # logger.debug(f"Session {request.session_id} history size after update: {len(session['history'])}")
+        
+        # Return based on whether it was a follow-up or final answer
+        if follow_up_response:
+            return QueryResponse(query=None, answer=follow_up_response)
+        else:
+             logger.info(f"Final answer for session {request.session_id}: {final_answer}")
+             return QueryResponse(query=sql_to_execute, answer=final_answer, error=None)
+
     except HTTPException as http_ex:
-        # Re-raise specific HTTP exceptions
+        # Log and re-raise specific HTTP exceptions
+        logger.error(f"HTTP Exception in query endpoint: {http_ex.detail}")
         raise http_ex
     except Exception as e:
-        # Catch-all for other unexpected errors
-        logger.error(f"An unexpected error occurred in the query endpoint: {e}", exc_info=True)
-        return QueryResponse(query=sql_to_execute, answer=None, error=f"An unexpected server error occurred: {e}")
+        # Catch-all for other unexpected errors during the main processing block
+        logger.error(f"An unexpected error occurred in the query endpoint for session {request.session_id}: {e}", exc_info=True)
+        # Ensure history includes the error message
+        error_answer = f"An unexpected server error occurred: {e}"
+        # Use a local variable for sql_to_return to handle potential NameError
+        sql_to_return = None
+        try:
+            # Check if sql_to_execute was assigned before the error
+            if 'sql_to_execute' in locals() and sql_to_execute is not None:
+                 sql_to_return = sql_to_execute
+            elif 'generated_sql_attempt1' in locals() and generated_sql_attempt1 is not None:
+                 # Fallback: use the last known generated SQL if available
+                 sql_to_return = generated_sql_attempt1
+        except NameError:
+            pass # Keep sql_to_return as None
+            
+        # Add error to history and apply limit
+        if 'session' in locals(): # Ensure session exists before modifying history
+            session["history"].append({"role": "assistant", "content": error_answer})
+            if len(session["history"]) > MAX_HISTORY_MESSAGES:
+                 session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
+                 
+        return QueryResponse(query=sql_to_return, answer=None, error=error_answer)
 
 
 @app.get("/health", summary="Health Check")

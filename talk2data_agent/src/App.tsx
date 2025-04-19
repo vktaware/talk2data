@@ -16,6 +16,7 @@ function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentBuyerId, setCurrentBuyerId] = useState<number | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState('');
 
   const toggleChat = () => setIsChatOpen(!isChatOpen);
 
@@ -90,7 +91,10 @@ function App() {
       const response = await fetch(`${API_URL}/api/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_query: queryWithBuyerId }), // Send query with Buyer ID
+        body: JSON.stringify({ 
+            user_query: queryWithBuyerId, 
+            session_id: sessionId
+        }), 
       });
 
       if (!response.ok) {
