@@ -1,0 +1,6 @@
+@TalkToDataAPI_HostAddress = http://localhost:5170
+
+GET {{TalkToDataAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

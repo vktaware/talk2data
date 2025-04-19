@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+pyodbc
+# LangChain Core
+langchain
+# LangChain OpenAI Integration (including Azure)
+langchain-openai
+# LangChain Community (for SQLDatabase utility etc)
+langchain-community
+# Database Abstraction Layer (used by LangChain SQL tools)
+sqlalchemy
+# Specific SQLAlchemy dialect for MS SQL Server
+# sqlalchemy-pyodbc 

@@ -1,0 +1,320 @@
+/* AgentStyles.css */
+
+/* Container for the whole agent */
+.talk2data-agent-container {
+  position: relative; /* Or absolute if needed in consuming app */
+  /* Container itself doesn't need style unless you want
+     to constrain where the button/chat can appear */
+}
+
+/* Agent Button Styling */
+.agent-button {
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background-color: var(--agent-primary-color);
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 24px; /* Adjust if using an icon */
+  box-shadow: var(--agent-shadow);
+  z-index: 999;
+  transition: transform 0.3s ease, background-color 0.3s ease;
+}
+
+.agent-button:hover {
+  transform: scale(1.1);
+  background-color: #0056b3; /* Darker shade on hover */
+}
+
+/* Chat Interface Styling */
+.chat-interface {
+  position: fixed;
+  bottom: 100px; /* Position above the button */
+  right: 30px;
+  width: 40%; /* As requested */
+  max-width: 500px; /* Max width for usability */
+  min-width: 300px; /* Min width */
+  height: 70%;
+  max-height: 600px; /* Max height */
+  background-color: white;
+  border-radius: var(--agent-border-radius);
+  box-shadow: var(--agent-shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* Crucial for border-radius and layout */
+  z-index: 1000;
+  animation: slideInUp 0.5s ease-out forwards;
+  border: 1px solid var(--agent-border-color);
+}
+
+@keyframes slideInUp {
+  from {
+    transform: translateY(50px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Chat Header */
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  background-color: var(--agent-primary-color);
+  color: white;
+  border-bottom: 1px solid var(--agent-border-color);
+}
+
+.chat-header h2 {
+  margin: 0;
+  font-size: 1.1em;
+  font-weight: 600;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 1.4em;
+  cursor: pointer;
+  padding: 0 5px;
+  line-height: 1;
+}
+
+.close-button:hover {
+  opacity: 0.8;
+}
+
+/* Message List Styling */
+.message-list {
+  flex-grow: 1;
+  overflow-y: auto;
+  padding: 15px;
+  background-color: var(--agent-secondary-color);
+  display: flex;
+  flex-direction: column;
+}
+
+.message {
+  margin-bottom: 12px;
+  padding: 10px 15px;
+  border-radius: var(--agent-border-radius);
+  max-width: 80%;
+  word-wrap: break-word;
+  animation: fadeIn 0.4s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.message.user {
+  background-color: var(--agent-primary-color);
+  color: white;
+  align-self: flex-end;
+  border-bottom-right-radius: 4px; /* Bubble tail effect */
+}
+
+.message.agent {
+  background-color: white;
+  color: var(--agent-text-dark);
+  align-self: flex-start;
+  border: 1px solid var(--agent-border-color);
+  border-bottom-left-radius: 4px; /* Bubble tail effect */
+}
+
+/* Input Bar Styling */
+.input-bar {
+  display: flex;
+  padding: 10px 15px;
+  border-top: 1px solid var(--agent-border-color);
+  background-color: white;
+}
+
+.input-bar input[type="text"] {
+  flex-grow: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--agent-border-color);
+  border-radius: var(--agent-border-radius);
+  margin-right: 10px;
+  font-size: 0.95em;
+}
+
+.input-bar input[type="text"]:focus {
+  outline: none;
+  border-color: var(--agent-primary-color);
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.2);
+}
+
+.input-bar button {
+  padding: 10px 20px;
+  background-color: var(--agent-primary-color);
+  color: white;
+  border: none;
+  border-radius: var(--agent-border-radius);
+  cursor: pointer;
+  font-size: 0.95em;
+  font-weight: 500;
+  transition: background-color 0.2s ease;
+}
+
+.input-bar button:hover {
+  background-color: #0056b3;
+}
+
+/* Add loading/typing indicator styles if needed */
+.message.agent.loading {
+  font-style: italic;
+  color: #888;
+  background-color: white;
+  color: var(--agent-text-dark);
+  align-self: flex-start;
+  border: 1px solid var(--agent-border-color);
+  border-bottom-left-radius: 4px; /* Bubble tail effect */
+}
+
+/* Style for the container holding the actual loader component */
+.loading-indicator-container {
+  align-self: flex-start; /* Align like an agent message */
+  margin-bottom: 12px; /* Match message margin */
+  padding: 10px 15px; /* Match message padding */
+  border-radius: var(--agent-border-radius);
+  border-bottom-left-radius: 4px; /* Bubble tail effect */
+  background-color: white;
+  border: 1px solid var(--agent-border-color);
+  display: inline-block; /* Fit content */
+  animation: fadeIn 0.4s ease-in; /* Reuse message fade-in */
+}
+
+/* Styles for when chat is in login mode */
+.chat-interface.login-mode {
+  /* Adjust height or other styles if needed when only showing login */
+  height: auto; /* Fit content */
+  max-height: 90vh;
+}
+
+/* Login Form Styling */
+.login-form {
+  padding: 20px 25px 30px 25px;
+  display: flex;
+  flex-direction: column;
+  align-items: center; 
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+.login-title {
+  color: var(--agent-primary-color);
+  margin-bottom: 5px;
+  font-size: 1.3em;
+}
+
+.login-subtitle {
+  color: #666;
+  font-size: 0.9em;
+  margin-top: 0;
+  margin-bottom: 20px;
+}
+
+.input-group {
+  width: 100%;
+  margin-bottom: 15px;
+}
+
+.input-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: 500;
+  font-size: 0.9em;
+  color: #555;
+}
+
+.input-group input[type="text"],
+.input-group input[type="password"] {
+  width: 100%; /* Take full width of container */
+  box-sizing: border-box; /* Include padding and border in width */
+  padding: 10px 12px;
+  border: 1px solid var(--agent-border-color);
+  border-radius: 8px; /* Slightly less rounded than main radius */
+  font-size: 1em;
+}
+
+.input-group input:focus {
+   outline: none;
+  border-color: var(--agent-primary-color);
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.2);
+}
+
+.error-message {
+  color: #dc3545;
+  font-size: 0.85em;
+  margin-top: -10px;
+  margin-bottom: 15px;
+  text-align: center;
+  animation: shake 0.4s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  50% { transform: translateX(5px); }
+  75% { transform: translateX(-5px); }
+}
+
+.login-button {
+  width: 100%;
+  padding: 12px 20px;
+  background-color: var(--agent-primary-color);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1em;
+  font-weight: 600;
+  transition: background-color 0.2s ease;
+}
+
+.login-button:hover:not(:disabled) {
+  background-color: #0056b3;
+}
+
+.login-button:disabled {
+  background-color: #a0cfff; /* Lighter blue when disabled */
+  cursor: not-allowed;
+}
+
+
+/* Logout Button Styling */
+.logout-button {
+  background: none;
+  border: 1px solid white; /* Subtle border */
+  color: white;
+  font-size: 0.85em;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+  margin-right: 10px; /* Space between logout and close */
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.logout-button:hover {
+  background-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Ensure header buttons are aligned */
+.chat-header div {
+  display: flex;
+  align-items: center;
+} 

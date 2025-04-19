@@ -1,0 +1,23 @@
+# Visual Studio
+.vs/
+[Bb]in/
+[Oo]bj/
+*.suo
+*.user
+
+# Python
+__pycache__/
+*.py[cod]
+*.env
+*.venv
+venv/
+env/
+
+# Node.js (Good practice, even if nested)
+node_modules/
+dist/
+
+# IDE / System Files
+.idea/
+.DS_Store
+Thumbs.db 
