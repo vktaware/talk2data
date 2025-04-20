@@ -19,7 +19,7 @@ const LoginForm: React.FC<LoginFormProps> = ({ onLogin, error, isLoading }) => {
 
   return (
     <form onSubmit={handleSubmit} className="login-form">
-      <h3 className="login-title">Login Required</h3>
+      <h3 className="login-title">LISA : Live Interactive Smart Assistant</h3>
       <p className="login-subtitle">Please enter your credentials to chat.</p>
       <div className="input-group">
         <label htmlFor="username">Username</label>

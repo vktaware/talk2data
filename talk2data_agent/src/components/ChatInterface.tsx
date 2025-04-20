@@ -1,7 +1,8 @@
 import React from 'react';
 import MessageList, { Message } from './MessageList';
-import InputBar from './InputBar';
+import InputBar, { InputBarRef } from './InputBar';
 import LoginForm from './LoginForm';
+import SampleQueries from './SampleQueries';
 
 interface ChatInterfaceProps {
   messages: Message[];
@@ -13,6 +14,8 @@ interface ChatInterfaceProps {
   loginError: string | null;
   isLoginLoading: boolean;
   isLoading: boolean;
+  onSampleQuerySelect: (queryText: string) => void;
+  inputBarRef: React.RefObject<InputBarRef | null>;
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ 
@@ -24,12 +27,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onLogout,
   loginError,
   isLoginLoading,
-  isLoading
+  isLoading,
+  onSampleQuerySelect,
+  inputBarRef
 }) => {
+  const showSampleQueries = isLoggedIn && messages.length === 1;
+
   return (
     <div className={`chat-interface ${!isLoggedIn ? 'login-mode' : ''}`}>
       <div className="chat-header">
-        <h2>TalkToData Agent</h2>
+        <h2>LISA : Live Interactive Smart Assistant</h2>
         <div>
           {isLoggedIn && (
             <button onClick={onLogout} className="logout-button" aria-label="Logout">
@@ -49,7 +56,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       ) : (
         <>
           <MessageList messages={messages} isLoading={isLoading} />
-          <InputBar onSendMessage={onSendMessage} />
+          {showSampleQueries && <SampleQueries onQuerySelect={onSampleQuerySelect} />}
+          <InputBar ref={inputBarRef} onSendMessage={onSendMessage} />
         </>
       )}
     </div>

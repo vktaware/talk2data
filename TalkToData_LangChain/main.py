@@ -355,31 +355,32 @@ def execute_sql(sql: str):
 sql_gen_prompt_template = ChatPromptTemplate.from_messages([
     ("system",
      """You are an expert T-SQL assistant generating SQL Server queries to call specific table-valued functions.
-{history} # Conversation history provides context.
-Context: User may refer to entities mentioned earlier in the history.
-**Goal:** Based on the user's *latest query* (`{question}`) and potentially the *history*, choose the single most appropriate function and generate the SQL to call it.
+
+**Conversation History:**
+{history}
+
+**Context Instructions:**
+- Analyze the latest user query (`{question}`) below.
+- CRITICALLY EXAMINE the conversation history provided above. The user might refer back to entities (products, orders, etc.) mentioned previously using pronouns ('it', 'this', 'that', 'the product', 'the order') or implicit references.
+- Your primary goal is to resolve these references using the history to understand the *true* subject of the user's latest query.
+- The Buyer ID is mandatory and should be available from the login context; do not generate SQL if it's missing (though Python handles this).
+
+**Goal:** Based on the user's *latest query* (`{question}`) fully understood in the context of the *history*, choose the single most appropriate function and generate the SQL to call it.
+
 **Available Functions & Schemas:**
 {schema}
-**Process:**
-1. **Analyze:** Understand the latest user query in the context of the history.
-2. **Choose Function:** Select either `dbo.t2dFunc_GetBuyerProductDetails` or `dbo.t2dFunc_GetBuyerSaleOrderDetails`.
-3. **Extract Parameters:** Identify the mandatory `@buyerId` and any optional parameters present in the query or implied by the history for the chosen function.
-4. **Generate SQL:** Construct the `SELECT * FROM ChosenFunctionName(...)` statement using POSITIONAL arguments as specified in the schema. Ensure the *exact* number of arguments (values or `NULL`) is provided (31 for ProductDetails, 23 for SaleOrderDetails).
-5. **Format Output (CRITICAL):** Your response MUST be **ONLY** a single JSON object containing THREE keys: `function_name` (string), `sql` (string), and `buyer_id` (integer). Do NOT include any explanations, introductory text, markdown formatting (like ```json), or anything else outside the single JSON object.
 
-**Example of CORRECT Output:**
+**Process:**
+1. **Analyze Context:** Understand the latest user query `{question}` using the conversation `{history}`.
+2. **Choose Function:** Select `dbo.t2dFunc_GetBuyerProductDetails` or `dbo.t2dFunc_GetBuyerSaleOrderDetails` based on the resolved query subject.
+3. **Extract Parameters:** Identify the mandatory `@buyerId` and any optional parameters (e.g., ProductDescription, BuyerOrderNo) present in the query or clearly identified from the history.
+4. **Generate SQL:** Construct the `SELECT * FROM ChosenFunctionName(...)` statement using POSITIONAL arguments. Ensure the *exact* number of arguments (31 for ProductDetails, 23 for SaleOrderDetails) using `NULL` for unspecified optional parameters.
+5. **Format Output (CRITICAL):** Respond ONLY with a single valid JSON object containing THREE keys: `function_name` (string), `sql` (string), and `buyer_id` (integer). Do NOT include *any* other text, explanations, or markdown.
+
+**Example CORRECT Output:**
 ```json
 {{"function_name": "dbo.t2dFunc_GetBuyerProductDetails", "sql": "SELECT * FROM dbo.t2dFunc_GetBuyerProductDetails(105, NULL, N'Some Product', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);", "buyer_id": 105}}
 ```
-
-**Example of INCORRECT Output (Do NOT do this):**
-Based on your request, I will use the Product Details function. Here is the JSON:
-```json
-{{"function_name": ... , "sql": ... , "buyer_id": ...}}
-```
-This query should give you the results.
-
-**Strict Output Rule:** Respond ONLY with the valid JSON object and nothing else.
 """
      ),
     ("human", "{question}"), # This is the latest user query
@@ -389,17 +390,37 @@ This query should give you the results.
 # --- Prompt Template (for Data Processing - Updated with Context) ---
 data_processing_prompt_template = ChatPromptTemplate.from_messages([
     ("system",
-     """You are an assistant processing database results...
-     {history} # Placeholder for history injection
-     Analyze the user's *original question* in the context of the *conversation history* and the provided *database records* to formulate your answer.
-     ...
-     Data Type: {data_type}
-     Database Records (JSON format):
-     {db_results}
-     ---
-     """
+     """You are an assistant processing database results based on user queries and contextual history. Your task is to analyze the latest user question and provide an appropriate, formatted answer based on the provided data.
+
+**Conversation History:**
+{history}
+
+**Database Results:**
+{db_results}
+
+**Your response should:**
+1. If the Database Results contain multiple records (more than one item in the JSON list), format the output as a standard **Markdown table**. Ensure headers are clear and data is aligned.
+2. If the Database Results contain only a single record or a few key fields, present the information clearly in plain text, using Markdown bolding (`**FieldName**`) for emphasis on the field names or key values where appropriate.
+3. If the Database Results are empty or an error occurred, provide a user-friendly message (no special formatting needed):
+    - Product not found: "I couldn't find the product you're asking for. Please check the product code or description."
+    - Order not found: "Sorry, I couldn't find the order details you're asking for. Please check the order number and try again."
+    - General error/no results: "Sorry, I couldn't find any information matching your criteria." or "Sorry, I encountered an issue processing your request. Please try again later."
+4. NEVER include SQL queries or technical database jargon in your response.
+5. Base your answer ONLY on the provided Database Results and the context from the Conversation History and the Original Question.
+
+**Markdown Table Example:**
+| Product Code | Name          | Brand      | Price | Quantity |
+|--------------|---------------|------------|-------|----------|
+| P001         | Product A     | Brand A    | $10   | 100      |
+| P002         | Product B     | Brand B    | $12   | 50       |
+
+**Single Record Example:**
+The status for order **12345** is **Shipped**. The ETA Date is **2023-11-15**.
+
+**Focus on clarity and standard Markdown for formatting.**
+"""
      ),
-    ("human", "Original Question: {question}") # 'question' here should be the initiating query of the turn
+    ("human", "Original Question: {question}") # This is the initiating query of the turn
 ])
 
 
@@ -535,8 +556,9 @@ async def query_database(request: QueryRequest):
     sql_to_execute_for_log = None # Store SQL for final log/response
     final_answer_for_log = None # Store final answer
 
-    try: # Wrap main logic in try for logging
+    try: # Outer try for overall request processing
         if session["pending_action"]:
+            # --- Handle User Response to Follow-up ---
             logger.info(f"Session {request.session_id} has pending action: {session['pending_action']}")
             pending_action = session["pending_action"]
             original_query = session["original_query"]
@@ -565,59 +587,34 @@ async def query_database(request: QueryRequest):
             # We don't necessarily need to reconstruct the query string, the history provides context
             logger.info(f"Proceeding with original query context after getting follow-up info.")
             # Fall through to the main processing logic below
+            pass # Explicitly indicate fall-through
 
-        else: # No pending action, process the query normally
+        # --- If no pending action, process normally ---
+        else:
             # Add current user query to history *before* processing
             session["history"].append({"role": "user", "content": user_query})
-
-            # Attempt to extract entities from the current query
+            # Attempt to extract entities from the current query *first*
+            # This helps populate context even before the LLM call
             extract_entities(user_query, session["extracted_entities"])
-            logger.info(f"Session entities after extraction: {session['extracted_entities']}")
+            logger.info(f"Session entities after initial extraction: {session['extracted_entities']}")
+            # NOTE: We removed the pre-LLM check for missing info here.
 
-            # --- Check if we have enough info (Example Logic) ---
-            # Basic intent detection (can be improved with LLM later if needed)
-            query_lower = user_query.lower()
-            is_product_query = any(k in query_lower for k in ["product", "generic", "ingredient", "rate", "brand"])
-            is_order_query = any(k in query_lower for k in ["order", "status", "eta", "shipping"])
-
-            needs_info = None
-            if is_product_query and not (session["extracted_entities"].get('product_name') or session["extracted_entities"].get('product_code')):
-                needs_info = 'product'
-                follow_up_response = "Which product are you asking about? Please provide the name or code."
-                session["pending_action"] = 'needs_product'
-            elif is_order_query and not session["extracted_entities"].get('order_no'):
-                 # Check history first - maybe order was mentioned?
-                 # TODO: Add logic to check history for order no before asking
-                 needs_info = 'order_no'
-                 follow_up_response = "What is the Order Number you are referring to?"
-                 session["pending_action"] = 'needs_order_no'
-            # TODO: Add more checks for other scenarios
-
-            if needs_info:
-                logger.warning(f"Query missing information: {needs_info}. Asking follow-up.")
-                session["original_query"] = user_query # Store the query that needs info
-                session["history"].append({"role": "assistant", "content": follow_up_response})
-                logger.info(f"Asking follow-up question for session {request.session_id}: {follow_up_response}")
-                # Apply history limit after adding assistant response
-                if len(session["history"]) > MAX_HISTORY_MESSAGES:
-                    session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
-                logger.info("= = = = = End Query Request (Follow-up) = = = = =") # Separator
-                return QueryResponse(query=None, answer=follow_up_response)
-
-        # --- If we have enough info (or got it from follow-up), proceed to LLM --- 
-        logger.info("Sufficient information detected or obtained. Proceeding to LLM SQL generation.")
+        # --- Proceed to LLM for SQL Generation (or use updated context if follow-up was handled) ---
+        logger.info("Proceeding to LLM SQL generation.")
         
         if initialization_error or llm is None:
             raise HTTPException(status_code=503, detail=f"Service unavailable: {initialization_error or 'LLM not initialized'}")
 
-        try:
-            generated_sql_attempt1 = None
-            chosen_function_name = None
-            sql_to_execute = None
-            results = []
-            final_answer = None
-            execution_error = None
-            
+        # Inner try block for LLM calls, DB execution etc.
+        # Initialize vars for this attempt
+        generated_sql_attempt1 = None
+        chosen_function_name = None
+        sql_to_execute = None
+        results = []
+        final_answer = None
+        execution_error = None
+        
+        try: # Inner try for LLM/DB processing
             # == Step 1: Generate SQL using LLM ==
             formatted_history = format_history_for_llm(session["history"])
             # Use the latest user message from history as the primary question for SQL gen
@@ -677,7 +674,35 @@ async def query_database(request: QueryRequest):
                 logger.error(f"Failed during SQL generation/parsing: {gen_ex}. Raw output: {raw_llm_output}", exc_info=True)
                 raise HTTPException(status_code=400, detail=f"Failed to generate/parse initial SQL query: {gen_ex}")
 
-            # == Step 1a: Attempt BuyerOrderNo Override (Python Regex) ==
+            # === NEW: Check for Missing Parameters AFTER LLM ===
+            needs_info = None
+            if chosen_function_name == "dbo.t2dFunc_GetBuyerProductDetails":
+                if not (session["extracted_entities"].get('product_name') or session["extracted_entities"].get('product_code')):
+                    needs_info = 'product'
+                    follow_up_response = "Which product are you asking about? Please provide the name or code."
+                    session["pending_action"] = 'needs_product'
+            elif chosen_function_name == "dbo.t2dFunc_GetBuyerSaleOrderDetails":
+                 if not session["extracted_entities"].get('order_no'):
+                    needs_info = 'order_no'
+                    follow_up_response = "What is the Order Number you are referring to?"
+                    session["pending_action"] = 'needs_order_no'
+            # TODO: Add checks for other functions if they exist
+
+            if needs_info:
+                logger.warning(f"Query requires info ({needs_info}) based on LLM function choice ({chosen_function_name}). Asking follow-up.")
+                session["original_query"] = user_query # Store the query that needs info
+                session["history"].append({"role": "assistant", "content": follow_up_response})
+                # Apply history limit
+                if len(session["history"]) > MAX_HISTORY_MESSAGES:
+                    session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
+                logger.info("= = = = = End Query Request (Follow-up) = = = = =") # Separator
+                return QueryResponse(query=None, answer=follow_up_response)
+            # === END NEW CHECK ===
+
+            # --- If parameters are present, continue with processing --- 
+            logger.info(f"LLM chose function '{chosen_function_name}'. Required parameters seem present. Proceeding...")
+            
+            # == Step 1a: BuyerOrderNo Override == 
             overridden_sql = generated_sql_attempt1 # Start with LLM's SQL
             if chosen_function_name == "dbo.t2dFunc_GetBuyerSaleOrderDetails":
                 try:
@@ -765,9 +790,9 @@ async def query_database(request: QueryRequest):
                     logger.error(f"Error during BuyerOrderNo override/fix attempt: {override_ex}", exc_info=True)
                     # Keep overridden_sql as generated_sql_attempt1 on error
                 
-            generated_sql_attempt1 = overridden_sql # Pass potentially fixed/overridden SQL to next step
-
-            # Initialize sql_to_execute with the result from Step 1a
+            generated_sql_attempt1 = overridden_sql 
+            
+            # Initialize sql_to_execute AFTER Step 1a potentially modifies generated_sql_attempt1
             sql_to_execute = generated_sql_attempt1 
 
             # == Step 1b: Parameter Count Correction ==

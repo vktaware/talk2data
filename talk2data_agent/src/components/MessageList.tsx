@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import TypingIndicator from './TypingIndicator'; // Import the loader
+import ReactMarkdown from 'react-markdown'; // Import ReactMarkdown
 
 export interface Message {
   type: 'user' | 'agent' | 'loading'; // Add 'loading' type
@@ -28,8 +29,8 @@ const MessageList: React.FC<MessageListProps> = ({ messages, isLoading }) => {
     <div className="message-list">
       {messages.map((msg, index) => (
         <div key={index} className={`message ${msg.type}`}> 
-          {/* Basic rendering, could add icons or formatting later */} 
-          {msg.text}
+          {/* Use ReactMarkdown to render the text */}
+          <ReactMarkdown>{msg.text}</ReactMarkdown>
         </div>
       ))}
       

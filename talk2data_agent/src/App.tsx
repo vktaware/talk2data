@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import AgentButton from './components/AgentButton';
 import ChatInterface from './components/ChatInterface';
 import { Message } from './components/MessageList'; // Import the Message type
+import { InputBarRef } from './components/InputBar'; // Import InputBarRef
 import './AgentStyles.css';
 
 // Environment variable for API URL (ensure your build process handles this)
@@ -17,6 +18,7 @@ function App() {
   const [currentBuyerId, setCurrentBuyerId] = useState<number | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const inputBarRef = useRef<InputBarRef>(null); // Create ref for InputBar
 
   const toggleChat = () => setIsChatOpen(!isChatOpen);
 
@@ -59,9 +61,10 @@ function App() {
 
       if (data.buyer_id) {
         setIsLoggedIn(true);
-        setCurrentBuyerId(data.buyer_id); // Store the buyer ID received from response
-        setMessages([{ type: 'agent', text: 'Login successful! How can I help you?' }]); 
-        // Session ID remains set from before the fetch call
+        setCurrentBuyerId(data.buyer_id); 
+        // Set the new welcome message
+        const welcomeMessage = `Hi I am LISA: Live Interactive Smart Assistant\nI have information about your Orders, Products and Stocks.\nHow can I help you?`;
+        setMessages([{ type: 'agent', text: welcomeMessage }]); 
       } else {
         setSessionId(null); // Clear session ID if login response is weird
         throw new Error('Login failed: No Buyer ID returned.');
@@ -88,21 +91,24 @@ function App() {
     setSessionId(null); // Clear session ID on logout
   };
 
+  // Handler for sample query button clicks
+  const handleSampleQuerySelect = (queryText: string) => {
+    // Use the ref to call the setInputValue method on InputBar
+    inputBarRef.current?.setInputValue(queryText);
+  };
+
   // Send Message Handler (Modified)
   const handleSendMessage = async (messageText: string) => {
     // Ensure session ID exists before sending
     if (!messageText.trim() || !isLoggedIn || currentBuyerId === null || sessionId === null) {
         console.error("Cannot send message: Not logged in or session ID missing.");
-        // Optionally show an error to the user
-        // setMessages(prev => [...prev, { type: 'agent', text: 'Error: Session invalid. Please log out and log in again.' }]);
         return; 
     }
 
-    // Append Buyer ID to the query - No longer needed as backend uses session ID
-    // const queryWithBuyerId = `${messageText} (Buyer ID is ${currentBuyerId})`;
-    const queryToSend = messageText; // Send the original query text
+    // Re-append Buyer ID to the query text for the LLM
+    const queryWithBuyerId = `${messageText} (Buyer ID is ${currentBuyerId})`;
 
-    const userMessage: Message = { type: 'user', text: messageText }; 
+    const userMessage: Message = { type: 'user', text: messageText }; // Show original text to user in UI
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
 
@@ -111,8 +117,8 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-            user_query: queryToSend, 
-            session_id: sessionId // Use the stored session ID
+            user_query: queryWithBuyerId, // Send query WITH Buyer ID appended
+            session_id: sessionId 
         }), 
       });
 
@@ -151,6 +157,8 @@ function App() {
           loginError={loginError}
           isLoginLoading={isLoginLoading}
           isLoading={isLoading}
+          onSampleQuerySelect={handleSampleQuerySelect}
+          inputBarRef={inputBarRef}
         />
       )}
     </div>

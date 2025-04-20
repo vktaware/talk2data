@@ -33,6 +33,13 @@
   background-color: #0056b3; /* Darker shade on hover */
 }
 
+/* Style for the icon inside the button */
+.agent-button-icon {
+  width: 60%; /* Adjust size as needed */
+  height: 60%; /* Adjust size as needed */
+  object-fit: contain; /* Ensure icon fits well */
+}
+
 /* Chat Interface Styling */
 .chat-interface {
   position: fixed;
@@ -317,4 +324,42 @@
 .chat-header div {
   display: flex;
   align-items: center;
+}
+
+/* Sample Queries Styling */
+.sample-queries-container {
+  padding: 5px 15px 10px 15px;
+  border-bottom: 1px solid var(--agent-border-color);
+  background-color: #fdfdfd; /* Slightly off-white */
+  animation: fadeIn 0.5s ease-in; /* Reuse fade-in */
+}
+
+.sample-queries-title {
+  font-size: 0.85em;
+  color: #555;
+  margin-top: 0;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.sample-queries-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sample-query-button {
+  background-color: #e9ecef;
+  border: 1px solid #ced4da;
+  color: var(--agent-text-dark);
+  padding: 5px 10px;
+  border-radius: 15px; /* Pill shape */
+  font-size: 0.8em;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.sample-query-button:hover {
+  background-color: #dde2e6;
+  border-color: #adb5bd;
 } 

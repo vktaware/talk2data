@@ -1,4 +1,5 @@
 import React from 'react';
+import agentIcon from '../assets/favicon.png'; // Import the icon
 
 // Using FontAwesome for an icon - you might need to install it:
 // npm install @fortawesome/fontawesome-svg-core @fortawesome/free-solid-svg-icons @fortawesome/react-fontawesome
@@ -13,9 +14,8 @@ interface AgentButtonProps {
 const AgentButton: React.FC<AgentButtonProps> = ({ onClick }) => {
   return (
     <button onClick={onClick} className="agent-button" aria-label="Toggle Chat">
-      {/* Replace with an actual icon if desired */}
-      {/* <FontAwesomeIcon icon={faCommentDots} /> */}
-      🤖 {/* Simple Robot Emoji Icon */}
+      {/* Use img tag for the icon */}
+      <img src={agentIcon} alt="LISA Agent Icon" className="agent-button-icon" />
     </button>
   );
 };
