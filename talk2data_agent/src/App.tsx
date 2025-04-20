@@ -16,7 +16,7 @@ function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentBuyerId, setCurrentBuyerId] = useState<number | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState('');
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   const toggleChat = () => setIsChatOpen(!isChatOpen);
 
@@ -35,25 +35,35 @@ function App() {
   const handleLogin = async (username: string, password: string) => {
     setLoginError(null); // Clear previous errors
     setIsLoginLoading(true);
+    
+    // Generate a new session ID for this login attempt
+    const newSessionId = crypto.randomUUID(); 
+    setSessionId(newSessionId); // Store it in state immediately
+    // Use console.log and JS template literal for frontend logging
+    console.log(`Generated new session ID for login: ${newSessionId}`); 
+
     try {
       const response = await fetch(`${API_URL}/api/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        // Send session ID along with credentials
+        body: JSON.stringify({ username, password, session_id: newSessionId }),
       });
 
       const data = await response.json();
 
       if (!response.ok || data.error) {
+        setSessionId(null); // Clear session ID on failed login
         throw new Error(data.error || `HTTP error! status: ${response.status}`);
       }
 
       if (data.buyer_id) {
         setIsLoggedIn(true);
-        setCurrentBuyerId(data.buyer_id);
-        setMessages([{ type: 'agent', text: 'Login successful! How can I help you?' }]); // Welcome message on login
+        setCurrentBuyerId(data.buyer_id); // Store the buyer ID received from response
+        setMessages([{ type: 'agent', text: 'Login successful! How can I help you?' }]); 
+        // Session ID remains set from before the fetch call
       } else {
-        // Should be caught by the error check above, but as a fallback
+        setSessionId(null); // Clear session ID if login response is weird
         throw new Error('Login failed: No Buyer ID returned.');
       }
 
@@ -63,6 +73,7 @@ function App() {
       setLoginError(errorMsg);
       setIsLoggedIn(false);
       setCurrentBuyerId(null);
+      setSessionId(null); // Clear session ID on error
     } finally {
       setIsLoginLoading(false);
     }
@@ -74,16 +85,24 @@ function App() {
     setCurrentBuyerId(null);
     setMessages([]); // Clear messages on logout
     setLoginError(null);
-    // Maybe add a logged out message?
-    // setMessages([{ type: 'agent', text: 'You have been logged out.' }]);
+    setSessionId(null); // Clear session ID on logout
   };
 
   // Send Message Handler (Modified)
   const handleSendMessage = async (messageText: string) => {
-    if (!messageText.trim() || !isLoggedIn || currentBuyerId === null) return;
+    // Ensure session ID exists before sending
+    if (!messageText.trim() || !isLoggedIn || currentBuyerId === null || sessionId === null) {
+        console.error("Cannot send message: Not logged in or session ID missing.");
+        // Optionally show an error to the user
+        // setMessages(prev => [...prev, { type: 'agent', text: 'Error: Session invalid. Please log out and log in again.' }]);
+        return; 
+    }
 
-    const queryWithBuyerId = `${messageText} (Buyer ID is ${currentBuyerId})`;
-    const userMessage: Message = { type: 'user', text: messageText };
+    // Append Buyer ID to the query - No longer needed as backend uses session ID
+    // const queryWithBuyerId = `${messageText} (Buyer ID is ${currentBuyerId})`;
+    const queryToSend = messageText; // Send the original query text
+
+    const userMessage: Message = { type: 'user', text: messageText }; 
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
 
@@ -92,8 +111,8 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-            user_query: queryWithBuyerId, 
-            session_id: sessionId
+            user_query: queryToSend, 
+            session_id: sessionId // Use the stored session ID
         }), 
       });
 

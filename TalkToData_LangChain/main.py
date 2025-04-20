@@ -219,6 +219,7 @@ class QueryResponse(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+    session_id: str # Add session_id
 
 class LoginResponse(BaseModel):
     buyer_id: int | None = None
@@ -420,7 +421,7 @@ def format_history_for_llm(history: list) -> str:
 
 @app.post("/api/login", response_model=LoginResponse)
 async def login_user(request: LoginRequest):
-    logger.info(f"Attempting login for user: {request.username}")
+    logger.info(f"Attempting login for user: {request.username} with session: {request.session_id}")
 
     if not DB_CONNECTION_STRING:
         logger.error("Database connection string not configured.")
@@ -443,6 +444,17 @@ async def login_user(request: LoginRequest):
 
         if row and row.BuyerId is not None:
             logger.info(f"Login successful for user: {request.username}. BuyerId: {row.BuyerId}")
+            
+            # --- Update Session --- 
+            session = get_or_create_session(request.session_id)
+            session["extracted_entities"]["buyer_id"] = row.BuyerId
+            # Optionally clear other entities/state on new login
+            session["history"] = [] 
+            session["pending_action"] = None
+            session["original_query"] = None
+            logger.info(f"Stored buyer_id {row.BuyerId} in session {request.session_id}")
+            # ---------------------
+            
             return LoginResponse(buyer_id=row.BuyerId)
         else:
             logger.warning(f"Login failed for user: {request.username}. Invalid credentials or user not found/inactive.")
@@ -466,22 +478,14 @@ async def query_database(request: QueryRequest):
     session = get_or_create_session(request.session_id)
     current_buyer_id = session["extracted_entities"].get("buyer_id") # Get buyer_id safely
 
-    # --- Ensure Buyer ID exists (Connect this to login later) ---
+    # --- Ensure Buyer ID exists (From Login) ---
     if current_buyer_id is None:
-         # Temporary extraction if login hasn't happened
-         buyer_match = re.search(r'buyer\s+id\s+is\s+(\d+)', request.user_query, re.IGNORECASE)
-         if buyer_match:
-             current_buyer_id = int(buyer_match.group(1))
-             session["extracted_entities"]["buyer_id"] = current_buyer_id
-             logger.info(f"Temp extracted buyer_id {current_buyer_id} for session {request.session_id}")
-         else:
-            # If no buyer ID in session or query, ask for it (simulating a missing mandatory param)
-            # Note: In the final version, this check should happen after login.
-            session["history"].append({"role": "user", "content": request.user_query})
-            follow_up = "I need your Buyer ID to proceed. Could you please provide it?"
-            session["history"].append({"role": "assistant", "content": follow_up})
-            # We aren't setting pending_action here as BuyerID is fundamental / handled by login flow ideally
-            return QueryResponse(query=None, answer=follow_up, error="Buyer ID Missing")
+        logger.warning(f"Access denied for session {request.session_id}: No Buyer ID found in session. User must log in.")
+        # Return an error indicating login is required
+        # Using 401 Unauthorized might be semantically correct, but requires frontend handling.
+        # Returning a specific error message in the response might be simpler for now.
+        return QueryResponse(query=None, answer="Login required to ask questions.", error="Authentication required")
+        # raise HTTPException(status_code=401, detail="Authentication required. Please log in.") # Alternative
 
     # --- State Machine Logic ---
     user_query = request.user_query
