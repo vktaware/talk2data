@@ -1,5 +1,6 @@
 import React from 'react';
-import agentIcon from '../assets/favicon.png'; // Import the icon
+// Use robot.png for the agent button icon
+import agentIcon from '../assets/robot.png'; 
 
 // Using FontAwesome for an icon - you might need to install it:
 // npm install @fortawesome/fontawesome-svg-core @fortawesome/free-solid-svg-icons @fortawesome/react-fontawesome

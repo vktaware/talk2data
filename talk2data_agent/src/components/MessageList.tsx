@@ -28,9 +28,17 @@ const MessageList: React.FC<MessageListProps> = ({ messages, isLoading }) => {
   return (
     <div className="message-list">
       {messages.map((msg, index) => (
-        <div key={index} className={`message ${msg.type}`}> 
-          {/* Use ReactMarkdown to render the text */}
-          <ReactMarkdown>{msg.text}</ReactMarkdown>
+        <div key={index} className={`message ${msg.type}`}>
+          <div className="message-content">
+            {/* Conditionally render based on message type */}
+            {msg.type === 'agent' ? (
+              <ReactMarkdown>
+                {msg.text}
+              </ReactMarkdown>
+            ) : (
+              msg.text // Render user messages as plain text
+            )}
+          </div>
         </div>
       ))}
       

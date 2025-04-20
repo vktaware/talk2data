@@ -4,6 +4,9 @@ import InputBar, { InputBarRef } from './InputBar';
 import LoginForm from './LoginForm';
 import SampleQueries from './SampleQueries';
 
+// Use favicon.png for the chat header logo
+import logoSrc from '../assets/favicon.png'; 
+
 interface ChatInterfaceProps {
   messages: Message[];
   onSendMessage: (message: string) => void;
@@ -36,6 +39,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   return (
     <div className={`chat-interface ${!isLoggedIn ? 'login-mode' : ''}`}>
       <div className="chat-header">
+        {/* Replace span with img tag */}
+        <img src={logoSrc} alt="Logo" className="chat-logo-icon" /> 
         <h2>LISA : Live Interactive Smart Assistant</h2>
         <div>
           {isLoggedIn && (

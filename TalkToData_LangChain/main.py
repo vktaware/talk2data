@@ -395,12 +395,12 @@ data_processing_prompt_template = ChatPromptTemplate.from_messages([
 **Conversation History:**
 {history}
 
-**Database Results:**
+**Database Results (JSON format):**
 {db_results}
 
-**Your response should:**
-1. If the Database Results contain multiple records (more than one item in the JSON list), format the output as a standard **Markdown table**. Ensure headers are clear and data is aligned.
-2. If the Database Results contain only a single record or a few key fields, present the information clearly in plain text, using Markdown bolding (`**FieldName**`) for emphasis on the field names or key values where appropriate.
+**Your response MUST follow these formatting rules:**
+1. If the Database Results contain multiple records (more than one item in the JSON list), present the information as a descriptive list. For **each record**, start with a clear identifier like "Record 1:", "Record 2:", etc. Underneath each identifier, list the details using the format `**FieldName**: Value` on separate lines. Do NOT use Markdown tables.
+2. If the Database Results contain only a single record, present the information clearly in plain text or a simple list using the format `**FieldName**: Value` for each key field.
 3. If the Database Results are empty or an error occurred, provide a user-friendly message (no special formatting needed):
     - Product not found: "I couldn't find the product you're asking for. Please check the product code or description."
     - Order not found: "Sorry, I couldn't find the order details you're asking for. Please check the order number and try again."
@@ -408,16 +408,29 @@ data_processing_prompt_template = ChatPromptTemplate.from_messages([
 4. NEVER include SQL queries or technical database jargon in your response.
 5. Base your answer ONLY on the provided Database Results and the context from the Conversation History and the Original Question.
 
-**Markdown Table Example:**
-| Product Code | Name          | Brand      | Price | Quantity |
-|--------------|---------------|------------|-------|----------|
-| P001         | Product A     | Brand A    | $10   | 100      |
-| P002         | Product B     | Brand B    | $12   | 50       |
+**Example for Multiple Records (NO TABLES):**
+Record 1:
+**Product Code**: P001
+**Name**: Product A
+**Brand**: Brand A
+**Price**: $10
+**Quantity**: 100
 
-**Single Record Example:**
+Record 2:
+**Product Code**: P002
+**Name**: Product B
+**Brand**: Brand B
+**Price**: $12
+**Quantity**: 50
+
+**Example for Single Record:**
 The status for order **12345** is **Shipped**. The ETA Date is **2023-11-15**.
+Or:
+**Product Code**: P003
+**Name**: Product C
+**Rate**: $15.50
 
-**Focus on clarity and standard Markdown for formatting.**
+**Focus on clarity and the specified list format for multiple items.**
 """
      ),
     ("human", "Original Question: {question}") # This is the initiating query of the turn

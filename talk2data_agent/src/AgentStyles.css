@@ -1,365 +1,539 @@
 /* AgentStyles.css */
 
-/* Container for the whole agent */
-.talk2data-agent-container {
-  position: relative; /* Or absolute if needed in consuming app */
-  /* Container itself doesn't need style unless you want
-     to constrain where the button/chat can appear */
+/* General Styles - Keep these minimal */
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  padding: 0;
+  background-color: #f4f7f6; /* Light background for contrast */
 }
 
-/* Agent Button Styling */
-.agent-button {
+/* Agent Container */
+.talk2data-agent-container {
   position: fixed;
-  bottom: 30px;
-  right: 30px;
-  width: 60px;
-  height: 60px;
-  border-radius: 50%;
-  background-color: var(--agent-primary-color);
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+}
+
+/* Agent Button (Minimized State) */
+.agent-button {
+  background: linear-gradient(135deg, #0d6efd, #0a58ca); /* Primary Blue Gradient */
   color: white;
   border: none;
-  cursor: pointer;
+  border-radius: 50%;
+  width: 60px;
+  height: 60px;
   display: flex;
   justify-content: center;
   align-items: center;
-  font-size: 24px; /* Adjust if using an icon */
-  box-shadow: var(--agent-shadow);
-  z-index: 999;
-  transition: transform 0.3s ease, background-color 0.3s ease;
+  cursor: pointer;
+  box-shadow: 0 4px 15px rgba(13, 110, 253, 0.3), 0 0 0 2px rgba(255, 255, 255, 0.2); /* Adjusted shadow */
+  transition: transform 0.2s ease-out, box-shadow 0.2s ease;
+  animation: pulse 2s infinite ease-in-out; /* Attention grabbing pulse */
 }
 
 .agent-button:hover {
-  transform: scale(1.1);
-  background-color: #0056b3; /* Darker shade on hover */
+  background: linear-gradient(135deg, #0b5ed7, #084298); /* Darker Blue Hover */
+  box-shadow: 0 6px 20px rgba(10, 88, 202, 0.4), 0 0 0 3px rgba(255, 255, 255, 0.3);
+  transform: scale(1.05); /* Slight grow on hover */
 }
 
-/* Style for the icon inside the button */
+.agent-button:active {
+  transform: scale(0.95); /* Click feedback */
+  transition: transform 0.1s ease;
+}
+
 .agent-button-icon {
-  width: 60%; /* Adjust size as needed */
-  height: 60%; /* Adjust size as needed */
-  object-fit: contain; /* Ensure icon fits well */
+  width: 32px; /* Slightly larger */
+  height: 32px; /* Slightly larger */
+  object-fit: contain; /* Ensure image scales nicely */
 }
 
-/* Chat Interface Styling */
+/* Keyframes for Agent Button Pulse */
+@keyframes pulse {
+  0% {
+    box-shadow: 0 4px 15px rgba(13, 110, 253, 0.3), 0 0 0 2px rgba(255, 255, 255, 0.2);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 6px 25px rgba(13, 110, 253, 0.6), 0 0 0 6px rgba(255, 255, 255, 0.1);
+    transform: scale(1.03);
+  }
+  100% {
+    box-shadow: 0 4px 15px rgba(13, 110, 253, 0.3), 0 0 0 2px rgba(255, 255, 255, 0.2);
+    transform: scale(1);
+  }
+}
+
+/* Chat Interface (Expanded State) */
 .chat-interface {
-  position: fixed;
-  bottom: 100px; /* Position above the button */
-  right: 30px;
-  width: 40%; /* As requested */
-  max-width: 500px; /* Max width for usability */
-  min-width: 300px; /* Min width */
-  height: 70%;
-  max-height: 600px; /* Max height */
-  background-color: white;
-  border-radius: var(--agent-border-radius);
-  box-shadow: var(--agent-shadow);
+  width: calc(50vw - 40px); /* Adjust width for right margin */
+  height: calc(100vh - 40px); /* Adjust height to leave 20px margin top/bottom */
+  background: linear-gradient(180deg, #ffffff, #f0f4f8);
+  border-radius: 15px; /* Restore radius on all corners */
+  box-shadow: -5px 0px 25px rgba(0, 0, 0, 0.15); 
   display: flex;
   flex-direction: column;
-  overflow: hidden; /* Crucial for border-radius and layout */
-  z-index: 1000;
-  animation: slideInUp 0.5s ease-out forwards;
-  border: 1px solid var(--agent-border-color);
+  overflow: hidden;
+  position: fixed; 
+  top: 20px; /* Add 20px margin from top */
+  right: 20px; /* Add 20px margin from right */
+  /* bottom: 20px; - Let height determine this */
+  color: #333; 
+  transform-origin: bottom right; /* Keep origin for effect */
+  animation: genie-in-right 0.6s cubic-bezier(0.68, -0.55, 0.27, 1.55);
 }
 
-@keyframes slideInUp {
-  from {
-    transform: translateY(50px);
+/* Adjusted Genie animation for right-side expansion */
+@keyframes genie-in-right {
+  0% {
+    transform: scale(0.05) translate(150%, 150%); /* Start smaller and further away */
     opacity: 0;
+    clip-path: circle(10% at bottom right); /* Start clipped */
   }
-  to {
-    transform: translateY(0);
+  60% {
+    transform: scale(1.05) translate(0, 0); /* Overshoot */
     opacity: 1;
+    clip-path: circle(150% at bottom right); /* Expand clip */
+  }
+  100% {
+    transform: scale(1) translate(0, 0);
+    opacity: 1;
+    clip-path: circle(150% at bottom right); /* Ensure fully visible */
   }
 }
 
 /* Chat Header */
 .chat-header {
+  background: linear-gradient(135deg, #0d6efd, #0a58ca); /* Primary Blue Gradient */
+  color: white;
+  padding: 12px 18px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 15px;
-  background-color: var(--agent-primary-color);
-  color: white;
-  border-bottom: 1px solid var(--agent-border-color);
+  border-top-left-radius: 15px; /* Match container */
+  border-top-right-radius: 15px; /* Match container */
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15); /* Slightly stronger shadow */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); /* Subtle text shadow */
+  flex-shrink: 0; /* Prevent header from shrinking */
 }
 
 .chat-header h2 {
   margin: 0;
   font-size: 1.1em;
   font-weight: 600;
-}
-
-.close-button {
-  background: none;
-  border: none;
-  color: white;
-  font-size: 1.4em;
-  cursor: pointer;
-  padding: 0 5px;
-  line-height: 1;
-}
-
-.close-button:hover {
-  opacity: 0.8;
-}
-
-/* Message List Styling */
-.message-list {
-  flex-grow: 1;
-  overflow-y: auto;
-  padding: 15px;
-  background-color: var(--agent-secondary-color);
-  display: flex;
-  flex-direction: column;
-}
-
-.message {
-  margin-bottom: 12px;
-  padding: 10px 15px;
-  border-radius: var(--agent-border-radius);
-  max-width: 80%;
-  word-wrap: break-word;
-  animation: fadeIn 0.4s ease-in;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.message.user {
-  background-color: var(--agent-primary-color);
-  color: white;
-  align-self: flex-end;
-  border-bottom-right-radius: 4px; /* Bubble tail effect */
-}
-
-.message.agent {
-  background-color: white;
-  color: var(--agent-text-dark);
-  align-self: flex-start;
-  border: 1px solid var(--agent-border-color);
-  border-bottom-left-radius: 4px; /* Bubble tail effect */
-}
-
-/* Input Bar Styling */
-.input-bar {
-  display: flex;
-  padding: 10px 15px;
-  border-top: 1px solid var(--agent-border-color);
-  background-color: white;
-}
-
-.input-bar input[type="text"] {
-  flex-grow: 1;
-  padding: 10px 12px;
-  border: 1px solid var(--agent-border-color);
-  border-radius: var(--agent-border-radius);
-  margin-right: 10px;
-  font-size: 0.95em;
-}
-
-.input-bar input[type="text"]:focus {
-  outline: none;
-  border-color: var(--agent-primary-color);
-  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.2);
-}
-
-.input-bar button {
-  padding: 10px 20px;
-  background-color: var(--agent-primary-color);
-  color: white;
-  border: none;
-  border-radius: var(--agent-border-radius);
-  cursor: pointer;
-  font-size: 0.95em;
-  font-weight: 500;
-  transition: background-color 0.2s ease;
-}
-
-.input-bar button:hover {
-  background-color: #0056b3;
-}
-
-/* Add loading/typing indicator styles if needed */
-.message.agent.loading {
-  font-style: italic;
-  color: #888;
-  background-color: white;
-  color: var(--agent-text-dark);
-  align-self: flex-start;
-  border: 1px solid var(--agent-border-color);
-  border-bottom-left-radius: 4px; /* Bubble tail effect */
-}
-
-/* Style for the container holding the actual loader component */
-.loading-indicator-container {
-  align-self: flex-start; /* Align like an agent message */
-  margin-bottom: 12px; /* Match message margin */
-  padding: 10px 15px; /* Match message padding */
-  border-radius: var(--agent-border-radius);
-  border-bottom-left-radius: 4px; /* Bubble tail effect */
-  background-color: white;
-  border: 1px solid var(--agent-border-color);
-  display: inline-block; /* Fit content */
-  animation: fadeIn 0.4s ease-in; /* Reuse message fade-in */
-}
-
-/* Styles for when chat is in login mode */
-.chat-interface.login-mode {
-  /* Adjust height or other styles if needed when only showing login */
-  height: auto; /* Fit content */
-  max-height: 90vh;
-}
-
-/* Login Form Styling */
-.login-form {
-  padding: 20px 25px 30px 25px;
-  display: flex;
-  flex-direction: column;
-  align-items: center; 
-  animation: fadeIn 0.5s ease-in-out;
-}
-
-.login-title {
-  color: var(--agent-primary-color);
-  margin-bottom: 5px;
-  font-size: 1.3em;
-}
-
-.login-subtitle {
-  color: #666;
-  font-size: 0.9em;
-  margin-top: 0;
-  margin-bottom: 20px;
-}
-
-.input-group {
-  width: 100%;
-  margin-bottom: 15px;
-}
-
-.input-group label {
-  display: block;
-  margin-bottom: 5px;
-  font-weight: 500;
-  font-size: 0.9em;
-  color: #555;
-}
-
-.input-group input[type="text"],
-.input-group input[type="password"] {
-  width: 100%; /* Take full width of container */
-  box-sizing: border-box; /* Include padding and border in width */
-  padding: 10px 12px;
-  border: 1px solid var(--agent-border-color);
-  border-radius: 8px; /* Slightly less rounded than main radius */
-  font-size: 1em;
-}
-
-.input-group input:focus {
-   outline: none;
-  border-color: var(--agent-primary-color);
-  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.2);
-}
-
-.error-message {
-  color: #dc3545;
-  font-size: 0.85em;
-  margin-top: -10px;
-  margin-bottom: 15px;
-  text-align: center;
-  animation: shake 0.4s ease-in-out;
-}
-
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-5px); }
-  50% { transform: translateX(5px); }
-  75% { transform: translateX(-5px); }
-}
-
-.login-button {
-  width: 100%;
-  padding: 12px 20px;
-  background-color: var(--agent-primary-color);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 1em;
-  font-weight: 600;
-  transition: background-color 0.2s ease;
-}
-
-.login-button:hover:not(:disabled) {
-  background-color: #0056b3;
-}
-
-.login-button:disabled {
-  background-color: #a0cfff; /* Lighter blue when disabled */
-  cursor: not-allowed;
-}
-
-
-/* Logout Button Styling */
-.logout-button {
-  background: none;
-  border: 1px solid white; /* Subtle border */
-  color: white;
-  font-size: 0.85em;
-  font-weight: 500;
-  cursor: pointer;
-  padding: 4px 10px;
-  border-radius: 6px;
-  margin-right: 10px; /* Space between logout and close */
-  transition: background-color 0.2s ease, color 0.2s ease;
-}
-
-.logout-button:hover {
-  background-color: rgba(255, 255, 255, 0.15);
-}
-
-/* Ensure header buttons are aligned */
-.chat-header div {
   display: flex;
   align-items: center;
 }
 
-/* Sample Queries Styling */
-.sample-queries-container {
-  padding: 5px 15px 10px 15px;
-  border-bottom: 1px solid var(--agent-border-color);
-  background-color: #fdfdfd; /* Slightly off-white */
-  animation: fadeIn 0.5s ease-in; /* Reuse fade-in */
+.chat-logo-icon {
+  /* Style for the logo image */
+  margin-right: 10px; 
+  /* Remove font-size/line-height for img */
+  /* font-size: 1.5em; */
+  /* line-height: 1; */
+  /* Set explicit size for img */
+  width: 28px; 
+  height: 28px;
+  vertical-align: middle; /* Align with text */
+  object-fit: contain; /* Ensure image scales nicely */
 }
 
-.sample-queries-title {
-  font-size: 0.85em;
-  color: #555;
-  margin-top: 0;
-  margin-bottom: 8px;
+.chat-header button {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 1.2em;
+  cursor: pointer;
+  padding: 5px;
+  margin-left: 10px;
+  opacity: 0.8;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.chat-header button:hover {
+  opacity: 1;
+  transform: scale(1.1); /* Slight grow on hover */
+}
+
+.chat-header .logout-button {
+  font-size: 0.8em;
+  padding: 6px 12px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
   font-weight: 500;
 }
-
-.sample-queries-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.chat-header .logout-button:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+  transform: scale(1.05); /* Override scale */
 }
 
+/* Message List */
+.message-list {
+  flex-grow: 1;
+  padding: 15px 15px 5px 15px; /* Add padding */
+  overflow-y: auto;
+  /* Custom scrollbar (optional, but enhances look) */
+  scrollbar-width: thin;
+  scrollbar-color: #aab7c4 #e3e8ee;
+}
+
+.message-list::-webkit-scrollbar {
+  width: 8px;
+}
+.message-list::-webkit-scrollbar-track {
+  background: #e3e8ee;
+  border-radius: 4px;
+}
+.message-list::-webkit-scrollbar-thumb {
+  background-color: #aab7c4;
+  border-radius: 4px;
+  border: 2px solid #e3e8ee;
+}
+
+.message {
+  margin-bottom: 15px; /* Increased spacing */
+  display: flex;
+  animation: message-appear 0.4s ease-out; /* Animation for new messages */
+  opacity: 0; /* Start hidden for animation */
+  animation-fill-mode: forwards; /* Keep visible after animation */
+}
+
+/* Stagger message animation slightly */
+.message:nth-child(odd) { animation-delay: 0.05s; }
+.message:nth-child(even) { animation-delay: 0.1s; }
+
+@keyframes message-appear {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message-content {
+  padding: 10px 15px;
+  border-radius: 18px; /* More rounded */
+  max-width: 85%; /* Allow slightly wider messages */
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08); /* Subtle shadow */
+  line-height: 1.5; /* Slightly increase line height */
+  word-wrap: break-word; /* Ensure long words break */
+  white-space: pre-wrap; /* Crucial: Preserve whitespace and wrap text */
+  overflow-wrap: break-word; /* Ensure long words/strings break */
+}
+
+.message.user {
+  justify-content: flex-end;
+}
+
+.message.user .message-content {
+  background: linear-gradient(135deg, #0d6efd, #0a58ca); /* Primary Blue Gradient */
+  color: white;
+  border-bottom-right-radius: 5px; /* Tail effect */
+}
+
+.message.agent {
+  justify-content: flex-start;
+}
+
+.message.agent .message-content {
+  background: #e9ecef; /* Lighter agent background */
+  color: #333;
+  border: 1px solid #dee2e6; /* Adjusted border */
+  border-bottom-left-radius: 5px; /* Tail effect */
+  /* Ensure specific text styles for agent messages if needed */
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; /* Consistent font */
+}
+
+/* Input Bar */
+.input-bar {
+  display: flex;
+  padding: 12px 15px;
+  border-top: 1px solid #dee2e6;
+  background-color: #ffffff; /* White background */
+  flex-shrink: 0; /* Prevent shrinking */
+  border-bottom-left-radius: 15px; /* Match container */
+  border-bottom-right-radius: 15px; /* Match container */
+}
+
+.input-bar input {
+  flex-grow: 1;
+  padding: 10px 15px;
+  border: 1px solid #ced4da;
+  border-radius: 20px; /* Pill shape */
+  margin-right: 10px;
+  font-size: 1em;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  background-color: #ffffff !important; /* Force white background */
+  color: #212529 !important; /* Force dark text */
+}
+
+.input-bar input:focus {
+  outline: none;
+  border-color: #86b7fe; /* Consistent blue focus */
+  box-shadow: 0 0 0 4px rgba(13, 110, 253, 0.25); /* Consistent blue focus glow */
+}
+
+.input-bar button {
+  padding: 10px 18px; /* Slightly more padding */
+  background: linear-gradient(135deg, #0d6efd, #0a58ca); /* Primary Blue Gradient */
+  color: white;
+  border: none;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 1em;
+  font-weight: 500;
+  transition: background 0.2s ease, transform 0.1s ease, box-shadow 0.2s ease;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.input-bar button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #0b5ed7, #084298); /* Darker Blue Hover */
+  box-shadow: 0 3px 8px rgba(10, 88, 202, 0.2);
+}
+
+.input-bar button:active:not(:disabled) {
+  transform: scale(0.96); 
+}
+
+.input-bar button:disabled {
+  background: linear-gradient(135deg, #a9cbf7, #9cbde4); /* Lighter, muted blue disabled */
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Login Form Specific Styles */
+.login-form {
+  padding: 40px 30px; /* Adjust padding */
+  display: flex;
+  flex-direction: column;
+  align-items: center; 
+  justify-content: center; 
+  flex-grow: 1;
+  background: none; 
+  color: #333;
+  position: relative; /* Needed for pseudo-element border */
+  border-radius: 10px; /* Apply a base radius */
+  overflow: hidden; /* Keep animated border contained */
+  margin: 20px; /* Add some margin if inside another container */
+  background-color: rgba(255, 255, 255, 0.9); /* Slightly transparent white background */
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1); /* Add a subtle shadow */
+}
+
+/* Animated Gradient Border */
+.login-form::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  border-radius: 10px; /* Match parent */
+  padding: 3px; /* Border thickness */
+  background: linear-gradient(60deg, #6a11cb, #2575fc, #ec008c, #fc6767); /* Example gradient */
+  background-size: 300% 300%;
+  animation: gradient-border-animation 5s ease infinite;
+  -webkit-mask: 
+     linear-gradient(#fff 0 0) content-box, 
+     linear-gradient(#fff 0 0);
+  mask: 
+     linear-gradient(#fff 0 0) content-box, 
+     linear-gradient(#fff 0 0);
+  -webkit-mask-composite: destination-out; /* For Webkit browsers */
+  mask-composite: exclude; /* Standard */
+  z-index: -1; /* Place behind content */
+}
+
+@keyframes gradient-border-animation {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.login-title {
+  color: #334a6e; /* Slightly darker blue-grey */
+  margin-bottom: 10px;
+  font-size: 1.3em; /* Larger title */
+  font-weight: 600;
+  text-align: center;
+}
+
+.login-subtitle {
+  color: #5a6f8c; /* Muted blue-grey */
+  font-size: 0.95em;
+  margin-top: 0;
+  margin-bottom: 30px; /* Increased space */
+  text-align: center;
+}
+
+.input-group {
+  width: 85%; /* Slightly wider */
+  max-width: 320px; 
+  margin-bottom: 20px; 
+  position: relative; /* For potential input animations/icons */
+}
+
+.input-group label {
+  display: block;
+  margin-bottom: 8px; 
+  font-weight: 500;
+  font-size: 0.9em;
+  color: #495057; 
+}
+
+/* Style inputs within the login form */
+.login-form input[type="text"],
+.login-form input[type="password"] {
+  width: 100%;
+  padding: 12px 15px; 
+  border: 1px solid #ced4da;
+  border-radius: 8px; 
+  font-size: 1em;
+  box-sizing: border-box; 
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.2s ease; /* Added transform */
+  background-color: #ffffff !important; /* Force white background */
+  color: #212529 !important; /* Force dark text */
+}
+
+.login-form input:focus {
+  outline: none;
+  border-color: #86b7fe; /* Consistent blue focus */
+  box-shadow: 0 0 0 4px rgba(13, 110, 253, 0.25); /* Consistent blue focus glow */
+  transform: scale(1.02); /* Slight scale on focus */
+}
+
+.login-form .error-message { 
+  color: #dc3545; 
+  background-color: #f8d7da; 
+  border: 1px solid #f5c6cb; 
+  border-radius: 5px;
+  padding: 10px 15px;
+  margin-top: 0; /* Adjust spacing */
+  margin-bottom: 15px;
+  text-align: center;
+  font-size: 0.9em;
+  width: 85%; /* Match input width */
+  max-width: 320px;
+  box-sizing: border-box;
+  animation: shake 0.5s ease-in-out;
+}
+
+.login-button { 
+  width: 85%; 
+  max-width: 320px;
+  padding: 12px 20px;
+  background: linear-gradient(135deg, #0d6efd, #0a58ca); /* Primary Blue Gradient */
+  background-size: 100% 100%; /* Reset background size if set before */
+  color: white;
+  border: none;
+  border-radius: 8px; 
+  cursor: pointer;
+  font-size: 1.1em; /* Larger text */
+  font-weight: 600;
+  transition: background 0.3s ease, transform 0.1s ease, box-shadow 0.3s ease;
+  margin-top: 15px; /* More space above */
+  box-shadow: 0 3px 8px rgba(13, 110, 253, 0.2);
+}
+
+.login-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #0b5ed7, #084298); /* Darker Blue Hover */
+  box-shadow: 0 4px 12px rgba(10, 88, 202, 0.3); 
+}
+
+.login-button:active:not(:disabled) {
+  transform: scale(0.98); 
+}
+
+.login-button:disabled {
+  background: linear-gradient(135deg, #a9cbf7, #9cbde4); /* Lighter, muted blue disabled */
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Sample Queries - CORRECTED SELECTORS */
+.sample-queries-container { /* Use the class from the TSX */
+  padding: 15px 25px 20px 25px; /* Increased padding: Top Right Bottom Left */
+  border-bottom: 1px solid #dce1e6;
+  background-color: #f8f9fa;
+}
+
+.sample-queries-title { /* Use the class from the TSX */
+  font-size: 0.9em;
+  color: #495057;
+  margin-top: 0; /* Remove default margin */
+  margin-bottom: 15px; /* More space below title */
+  text-align: left; /* Align title left */
+  font-weight: 600;
+}
+
+.sample-queries-list { /* Use the class from the TSX */
+  display: grid; /* Use grid layout */
+  grid-template-columns: 1fr; /* Make buttons full width initially */
+  /* grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); */ /* Optional: if you want columns */
+  gap: 10px; /* Increase gap between buttons */
+  /* Removed -grid specific styles previously here by mistake */
+}
+
+/* Button styles remain the same as .sample-query-button */
 .sample-query-button {
   background-color: #e9ecef;
-  border: 1px solid #ced4da;
-  color: var(--agent-text-dark);
-  padding: 5px 10px;
-  border-radius: 15px; /* Pill shape */
-  font-size: 0.8em;
+  color: #343a40;
+  border: 1px solid #dee2e6;
+  padding: 10px 15px; /* Adjusted padding */
+  border-radius: 8px; /* Slightly less round */
+  font-size: 0.9em; /* Adjusted size */
   cursor: pointer;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
+  text-align: left; /* Align text left within button */
+  width: 100%; /* Make buttons take full width of the grid column */
+  box-sizing: border-box; /* Include padding/border in width */
+  transition: background-color 0.2s ease, transform 0.1s ease, box-shadow 0.2s ease;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
 
 .sample-query-button:hover {
   background-color: #dde2e6;
-  border-color: #adb5bd;
+  border-color: #c8ced3;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+}
+
+.sample-query-button:active {
+  transform: scale(0.98); /* Adjusted click feedback */
+  background-color: #d1d7dd;
+}
+
+/* Typing Indicator */
+.typing-indicator {
+  /* Styles already defined in TypingIndicator.css */
+  /* You can enhance them here if needed */
+   margin: 0 0 15px 10px; /* Align with agent messages */
+}
+.typing-indicator span {
+  /* Example enhancement */
+   background-color: #adb5bd; 
+}
+
+/* Error Message Styles */
+.login-error {
+  color: #dc3545; /* Standard error red */
+  background-color: #f8d7da; /* Light red background */
+  border: 1px solid #f5c6cb; /* Red border */
+  border-radius: 5px;
+  padding: 10px 15px;
+  margin-top: 15px;
+  text-align: center;
+  font-size: 0.9em;
+  animation: shake 0.5s ease-in-out; /* Shake animation for error */
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
+  20%, 40%, 60%, 80% { transform: translateX(5px); }
+}
+
+/* Login Mode - Adjustments if needed */
+.chat-interface.login-mode {
+   /* No longer need height adjustment as interface is full height */
+   /* background: #fff; Optional: simpler background for login? */
 } 

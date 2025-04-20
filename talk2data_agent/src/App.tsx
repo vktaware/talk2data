@@ -9,6 +9,97 @@ import './AgentStyles.css';
 // For Vite, use import.meta.env.VITE_API_URL
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'; // Fallback for dev
 
+// Helper function to format agent responses
+function formatAgentResponse(text: string): string {
+  const lines = text.trim().split('\n');
+  let formattedLines: string[] = [];
+  let srNo = 1;
+
+  // --- Refined Table Parsing --- 
+  const isTable = lines.length >= 3 && 
+                  lines[0].includes('|') && 
+                  lines[1].includes('---') && lines[1].includes('|') &&
+                  lines[2].includes('|');
+
+  if (isTable) {
+    const headers = lines[0].split('|').map(h => h.trim()).filter(h => h); // Extract headers
+    const dataRows = lines.slice(2); 
+
+    for (const row of dataRows) {
+      const cells = row.split('|').map(c => c.trim()).filter(c => c);
+      if (cells.length === headers.length) {
+        for (let i = 0; i < headers.length; i++) {
+          // Ensure we don't generate empty items
+          if (headers[i] && cells[i]) { 
+            formattedLines.push(`${srNo}. **${headers[i]}**: ${cells[i]}`);
+            srNo++;
+          }
+        }
+        // NO blank line between table rows items - create one continuous list
+      } else {
+        // If row is malformed but not empty, add it as raw info
+        const trimmedRow = row.trim();
+        if (trimmedRow && !trimmedRow.startsWith('|') && !trimmedRow.endsWith('|')) { // Avoid adding empty | lines
+           formattedLines.push(`${srNo}. **Info**: ${trimmedRow}`);
+           srNo++;
+        }
+      }
+    }
+    // If we processed a table, return the result directly
+    return formattedLines.join('\n').trim(); 
+  }
+
+  // --- Existing logic for non-table formats (key-value, lists) --- 
+  // Only run this if it wasn't detected as a table
+  const potentialStructureLines = lines.filter(line => line.includes(':') || line.trim().startsWith('*') || line.trim().startsWith('-')).length;
+  const alreadyFormatted = /^\s*\d+\.\s+\*\*/.test(lines[0]?.trim() || '');
+
+  if (potentialStructureLines > 1 && !alreadyFormatted) {
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) continue;
+
+      let heading = '';
+      let details = '';
+
+      const colonIndex = trimmedLine.indexOf(':');
+      if (colonIndex > 0) {
+        heading = trimmedLine.substring(0, colonIndex).trim();
+        heading = heading.replace(/^[-*]\s*/, ''); 
+        details = trimmedLine.substring(colonIndex + 1).trim();
+      } else if (trimmedLine.startsWith('* ') || trimmedLine.startsWith('- ')) {
+         heading = "Item";
+         details = trimmedLine.substring(2).trim();
+      } else {
+        // Avoid numbering single-line plain text responses
+        if (lines.length === 1) {
+            formattedLines.push(trimmedLine);
+            continue; // Don't number single lines
+        }
+        // If multiple lines but no clear structure, treat as Info
+        heading = "Info"; 
+        details = trimmedLine;
+      }
+      
+      // Add formatted line if heading and details exist
+      if(heading && details) {
+          if(heading.startsWith('**') && heading.endsWith('**')){
+            formattedLines.push(`${srNo}. ${heading}: ${details}`);
+          } else {
+            formattedLines.push(`${srNo}. **${heading}**: ${details}`);
+          }
+          srNo++;
+      } else if (trimmedLine) { // Fallback for lines that couldn't be parsed
+         formattedLines.push(trimmedLine); // Add as plain line
+      }
+    }
+    return formattedLines.join('\n');
+  } 
+  
+  // --- Fallback: Return original text if no formatting applied --- 
+  return lines.join('\n'); 
+}
+
 function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -129,14 +220,21 @@ function App() {
       }
 
       const data = await response.json();
-      const agentResponseText = data.answer || data.error || 'Sorry, I could not process your request.';
-      const agentMessage: Message = { type: 'agent', text: agentResponseText };
+      const rawAgentResponseText = data.answer || data.error || 'Sorry, I could not process your request.';
+      
+      // Format the agent response before adding it to state
+      const formattedAgentResponseText = formatAgentResponse(rawAgentResponseText);
+      
+      const agentMessage: Message = { type: 'agent', text: formattedAgentResponseText };
       setMessages(prev => [...prev, agentMessage]);
 
     } catch (error) {
       console.error("Failed to send message:", error);
       const errorText = error instanceof Error ? error.message : String(error);
       const errorMessage: Message = { type: 'agent', text: `Sorry, I encountered an error: ${errorText}` };
+      // Apply formatting to error messages too? Optional.
+      // const formattedError: Message = { type: 'agent', text: formatAgentResponse(errorMessage.text) }; 
+      // setMessages(prev => [...prev, formattedError]);
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
