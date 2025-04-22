@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import AgentButton from './components/AgentButton';
 import ChatInterface from './components/ChatInterface';
 import { Message } from './components/MessageList'; // Import the Message type
@@ -7,7 +7,7 @@ import './AgentStyles.css';
 
 // Environment variable for API URL (ensure your build process handles this)
 // For Vite, use import.meta.env.VITE_API_URL
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'; // Fallback for dev
+const API_URL = import.meta.env.VITE_API_URL || 'https://lisa-d7bfbka9fgg9haem.centralindia-01.azurewebsites.net/'; // Fallback for dev
 
 // Helper function to format agent responses
 function formatAgentResponse(text: string): string {

@@ -1,14 +1,18 @@
 fastapi
 uvicorn[standard]
+gunicorn
 python-dotenv
 pyodbc
-# LangChain Core
+# Database dependencies (choose based on your database)
+psycopg2  # PostgreSQL
+# mysqlclient  # MySQL (Uncomment if you're using MySQL)
+# redis  # Uncomment if you're using Redis
+# pymongo  # Uncomment if you're using MongoDB
+
+# LangChain Core and integrations
 langchain
-# LangChain OpenAI Integration (including Azure)
 langchain-openai
-# LangChain Community (for SQLDatabase utility etc)
 langchain-community
-# Database Abstraction Layer (used by LangChain SQL tools)
+# Other dependencies you may need:
 sqlalchemy
-# Specific SQLAlchemy dialect for MS SQL Server
-# sqlalchemy-pyodbc 
+redis>=4.0.0,<5.0.0

@@ -2,8 +2,9 @@ import os
 import pyodbc
 import logging
 import logging.handlers # Import handlers
-import json # Import json for parsing LLM output
+import json # Import json for parsing LLM output AND REDIS
 import datetime # Ensure the module is imported
+import redis # Import Redis library
 
 import decimal
 import re # Import regex library
@@ -56,71 +57,133 @@ file_handler.setLevel(logging.INFO) # Set level for the handler
 logger.addHandler(file_handler)
 
 # Optional: Add console handler back if you want logs both in file and console
-# console_handler = logging.StreamHandler()
-# console_handler.setFormatter(log_formatter)
-# console_handler.setLevel(logging.INFO)
-# logger.addHandler(console_handler)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+console_handler.setLevel(logging.INFO)
+logger.addHandler(console_handler)
 
 logger.info("--- Logging initialized --- Application starting ---")
 
 # --- Session Management Constants ---
 SESSION_EXPIRY_MINUTES = 30
+SESSION_EXPIRY_SECONDS = SESSION_EXPIRY_MINUTES * 60 # Use seconds for Redis expiry
 MAX_HISTORY_MESSAGES = 20 # Keep last N messages (user + assistant)
-SESSION_CLEANUP_INTERVAL_SECONDS = 600 # Run cleanup every 10 minutes
+# SESSION_CLEANUP_INTERVAL_SECONDS is no longer needed for Redis
 
-# --- In-Memory Session Storage ---
-user_sessions = {}
+# --- Redis Configuration ---
+REDIS_HOSTNAME = os.getenv("REDIS_HOSTNAME")
+REDIS_PORT = os.getenv("REDIS_PORT", 6380) # Default SSL port
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+redis_pool = None
+redis_client = None
+redis_connection_error = None
 
-def get_or_create_session(session_id: str) -> dict:
-    """Retrieves or initializes session context for a user session ID."""
-    # --- Import directly inside function --- 
+try:
+    if not all([REDIS_HOSTNAME, REDIS_PASSWORD]):
+        raise ValueError("Missing Redis configuration (REDIS_HOSTNAME, REDIS_PASSWORD) in environment settings.")
+
+    logger.info(f"Attempting to connect to Redis at {REDIS_HOSTNAME}:{REDIS_PORT}")
+    # Create a connection pool
+    redis_pool = redis.ConnectionPool(
+        host=REDIS_HOSTNAME,
+        port=REDIS_PORT,
+        password=REDIS_PASSWORD,
+        ssl=True, # Azure Cache for Redis requires SSL
+        ssl_cert_reqs='required', # Verify SSL certs
+        db=0, # Default Redis DB
+        decode_responses=False # Get bytes back, we'll handle decode/encode with JSON
+    )
+    # Create a client instance from the pool
+    redis_client = redis.Redis(connection_pool=redis_pool)
+    # Test connection
+    redis_client.ping()
+    logger.info("Successfully connected to Redis.")
+except ValueError as ve:
+    logger.critical(f"Redis Configuration Error: {ve}")
+    redis_connection_error = str(ve)
+except redis.exceptions.ConnectionError as ce:
+    logger.critical(f"Redis Connection Error: {ce}")
+    redis_connection_error = f"Failed to connect to Redis: {ce}"
+except Exception as e:
+    logger.critical(f"Unexpected error initializing Redis: {e}", exc_info=True)
+    redis_connection_error = f"Unexpected Redis initialization error: {e}"
+
+def get_or_create_session(session_id: str) -> dict | None:
+    """Retrieves session from Redis or initializes a new one."""
+    if redis_client is None or redis_connection_error:
+        logger.error(f"Redis client not available. Cannot get/create session {session_id}. Error: {redis_connection_error}")
+        return None # Indicate failure
+
     from datetime import datetime as dt_now_alias
-    # --- Remove Debug Print ---
-    # print(f"DEBUG (inside func): Type of 'datetime': {type(datetime)}, Value: {datetime}")
-    now = dt_now_alias.now() # Use the aliased import
-    if session_id not in user_sessions:
-        logger.info(f"Creating new session: {session_id}")
-        user_sessions[session_id] = {
-            "history": [], # List of {'role': 'user'|'assistant', 'content': str}
-            "extracted_entities": {"buyer_id": None}, # Store entities like product_name, order_no etc.
-            "pending_action": None, # e.g., 'needs_product', 'needs_order_no'
-            "original_query": None, # Store query that triggered pending_action
-            "last_accessed": now # Use timestamp from aliased import
-        }
-    else:
-        # Update timestamp on access
-        user_sessions[session_id]["last_accessed"] = now
-        # logger.debug(f"Found existing session: {session_id}")
-    return user_sessions[session_id]
+    now = dt_now_alias.now()
+    session_key = f"session:{session_id}" # Use a prefix for clarity
 
-# --- Background Session Cleanup Task ---
-async def cleanup_expired_sessions():
-    """Periodically removes sessions that haven't been accessed recently."""
-    # --- Import directly inside function --- 
-    from datetime import datetime as dt_class, timedelta
-    while True:
-        await asyncio.sleep(SESSION_CLEANUP_INTERVAL_SECONDS)
-        now = dt_class.now() # Use aliased import
-        expiry_threshold = now - timedelta(minutes=SESSION_EXPIRY_MINUTES) # timedelta is fine
-        expired_sessions = []
-        
-        # Safely identify expired sessions
-        session_ids = list(user_sessions.keys()) # Copy keys to avoid mutation issues during iteration
-        for session_id in session_ids:
-            session = user_sessions.get(session_id) # Check if still exists
-            if session and session.get("last_accessed", now) < expiry_threshold:
-                expired_sessions.append(session_id)
-                
-        # Remove expired sessions
-        if expired_sessions:
-            logger.info(f"Cleaning up {len(expired_sessions)} expired sessions: {expired_sessions}")
-            for session_id in expired_sessions:
-                try:
-                    del user_sessions[session_id]
-                except KeyError:
-                    logger.warning(f"Session {session_id} already removed during cleanup.")
+    try:
+        # Try to get existing session data (returns bytes or None)
+        session_data_bytes = redis_client.get(session_key)
+
+        if session_data_bytes:
+            # Decode bytes to string, then parse JSON
+            session = json.loads(session_data_bytes.decode('utf-8'))
+            logger.debug(f"Retrieved session {session_id} from Redis.")
+            # Update last accessed time
+            session["last_accessed_iso"] = now.isoformat() # Store as ISO string
+            # Save back to Redis with refreshed expiry
+            session_data_updated_json = json.dumps(session)
+            redis_client.setex(session_key, SESSION_EXPIRY_SECONDS, session_data_updated_json.encode('utf-8'))
+            return session
         else:
-            logger.debug("Session cleanup ran, no expired sessions found.")
+            # Create new session structure
+            logger.info(f"Creating new session {session_id} in Redis.")
+            new_session = {
+                "history": [],
+                "extracted_entities": {"buyer_id": None},
+                "pending_action": None,
+                "original_query": None,
+                "last_accessed_iso": now.isoformat()
+            }
+            # Serialize to JSON string, then encode to bytes
+            new_session_json = json.dumps(new_session)
+            # Save to Redis with expiry
+            redis_client.setex(session_key, SESSION_EXPIRY_SECONDS, new_session_json.encode('utf-8'))
+            return new_session
+
+    except redis.exceptions.RedisError as r_err:
+        logger.error(f"Redis error interacting with session {session_id}: {r_err}", exc_info=True)
+        return None # Indicate failure
+    except json.JSONDecodeError as j_err:
+         logger.error(f"Error decoding JSON for session {session_id}: {j_err}. Raw data might be corrupted.", exc_info=True)
+         # Optionally delete the corrupted key
+         # redis_client.delete(session_key)
+         return None # Indicate failure
+    except Exception as e:
+        logger.error(f"Unexpected error in get_or_create_session for {session_id}: {e}", exc_info=True)
+        return None # Indicate failure
+
+def save_session(session_id: str, session_data: dict):
+    """Saves the provided session data dictionary to Redis."""
+    if redis_client is None or redis_connection_error or not session_data:
+        logger.error(f"Redis client not available or no session data provided. Cannot save session {session_id}.")
+        return False # Indicate failure
+
+    session_key = f"session:{session_id}" # Use the same prefix
+    from datetime import datetime as dt_now_alias
+    now = dt_now_alias.now()
+
+    try:
+        # Ensure last accessed time is updated before saving
+        session_data["last_accessed_iso"] = now.isoformat()
+        # Serialize and save with expiry
+        session_json = json.dumps(session_data)
+        redis_client.setex(session_key, SESSION_EXPIRY_SECONDS, session_json.encode('utf-8'))
+        logger.debug(f"Saved session {session_id} to Redis.")
+        return True
+    except redis.exceptions.RedisError as r_err:
+        logger.error(f"Redis error saving session {session_id}: {r_err}", exc_info=True)
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error saving session {session_id}: {e}", exc_info=True)
+        return False
 
 # --- Configuration & Initialization ---
 
@@ -264,15 +327,15 @@ class LoginResponse(BaseModel):
 
 # --- FastAPI App ---
 app = FastAPI(
-    title="TalkToData API (LangChain Fail-Safe)",
-    description="API using LangChain LLM to query iTVFs, with fallback and post-processing.",
+    title="TalkToData API (LangChain Fail-Safe with Redis)",
+    description="API using LangChain LLM to query iTVFs, with fallback, post-processing, and Redis sessions.",
 )
 
-# --- Startup Event to Launch Background Task ---
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Starting background session cleanup task...")
-    asyncio.create_task(cleanup_expired_sessions())
+# --- REMOVE/COMMENT OUT Startup Event --- 
+# @app.on_event("startup")
+# async def startup_event():
+#    logger.info("Starting background session cleanup task...")
+#    asyncio.create_task(cleanup_expired_sessions())
 
 # CORS Configuration (keep as is)
 origins = [
@@ -502,7 +565,9 @@ async def login_user(request: LoginRequest):
 
     conn = None
     try:
+        logger.info("Attempting to connect to the database for login...")
         conn = pyodbc.connect(DB_CONNECTION_STRING, autocommit=True) # Autocommit is fine for SELECT
+        logger.debug("Database connection successful for login.")
         cursor = conn.cursor()
 
         # IMPORTANT: Use parameterized query to prevent SQL injection
@@ -518,14 +583,25 @@ async def login_user(request: LoginRequest):
         if row and row.BuyerId is not None:
             logger.info(f"Login successful for user: {request.username}. Session: {request.session_id}, BuyerId: {row.BuyerId}")
             
-            # --- Update Session --- 
+            # --- Update Session using Redis ---
             session = get_or_create_session(request.session_id)
+            if session is None:
+                 # Handle Redis error during session retrieval/creation
+                 logger.error(f"Failed to get/create session in Redis for session_id {request.session_id} during login.")
+                 raise HTTPException(status_code=500, detail="Session management error during login.")
+
             session["extracted_entities"]["buyer_id"] = row.BuyerId
-            # Optionally clear other entities/state on new login
-            session["history"] = [] 
+            session["history"] = [] # Clear history on new login
             session["pending_action"] = None
             session["original_query"] = None
-            logger.info(f"Stored buyer_id {row.BuyerId} in session {request.session_id}")
+
+            # Save the updated session back to Redis
+            if not save_session(request.session_id, session):
+                 logger.error(f"Failed to save updated session to Redis for session_id {request.session_id} after login.")
+                 # Decide if login should fail here - maybe just log warning?
+                 # raise HTTPException(status_code=500, detail="Session management error after login.")
+            else:
+                 logger.info(f"Stored buyer_id {row.BuyerId} in Redis session {request.session_id}")
             # ---------------------
             
             return LoginResponse(buyer_id=row.BuyerId)
@@ -534,10 +610,14 @@ async def login_user(request: LoginRequest):
             return LoginResponse(error="Invalid username or password")
 
     except pyodbc.Error as db_ex:
+        # Log the specific pyodbc error details
+        logger.error(f"Caught pyodbc.Error during login for user {request.username}: {db_ex}")
         # Use logger.exception to include traceback in file log
         logger.exception(f"Database error during login for user {request.username} (Session: {request.session_id})")
         raise HTTPException(status_code=500, detail="Database error during login.")
     except Exception as e:
+        # Log the specific generic exception details
+        logger.error(f"Caught unexpected Exception during login for user {request.username}: {e}")
         # Use logger.exception here too
         logger.exception(f"Unexpected error during login for user {request.username} (Session: {request.session_id})")
         raise HTTPException(status_code=500, detail="An unexpected error occurred during login.")
@@ -550,9 +630,20 @@ async def login_user(request: LoginRequest):
 
 @app.post("/api/query", response_model=QueryResponse)
 async def query_database(request: QueryRequest):
+    # Check Redis connection first
+    if redis_client is None or redis_connection_error:
+        logger.error(f"Query request failed: Redis client not available. Error: {redis_connection_error}")
+        raise HTTPException(status_code=503, detail=f"Service temporarily unavailable due to session store error: {redis_connection_error}")
+
     log_request_details = {"user_query": request.user_query, "session_id": request.session_id}
     logger.info(f"Query request received: {log_request_details}")
-    session = get_or_create_session(request.session_id)
+    session = get_or_create_session(request.session_id) # Call the Redis version
+
+    # Handle Redis failure in get_or_create_session
+    if session is None:
+        logger.error(f"Query request failed: Could not get/create session in Redis for {request.session_id}")
+        raise HTTPException(status_code=500, detail="Session retrieval error.")
+
     current_buyer_id = session["extracted_entities"].get("buyer_id") 
 
     # --- Ensure Buyer ID exists (From Login) ---
@@ -600,6 +691,7 @@ async def query_database(request: QueryRequest):
             # We don't necessarily need to reconstruct the query string, the history provides context
             logger.info(f"Proceeding with original query context after getting follow-up info.")
             # Fall through to the main processing logic below
+            save_session(request.session_id, session) # Save after handling follow-up
             pass # Explicitly indicate fall-through
 
         # --- If no pending action, process normally ---
@@ -609,6 +701,7 @@ async def query_database(request: QueryRequest):
             # Attempt to extract entities from the current query *first*
             # This helps populate context even before the LLM call
             extract_entities(user_query, session["extracted_entities"])
+            save_session(request.session_id, session) # Save after initial processing
             logger.info(f"Session entities after initial extraction: {session['extracted_entities']}")
             # NOTE: We removed the pre-LLM check for missing info here.
 
@@ -709,6 +802,7 @@ async def query_database(request: QueryRequest):
                 if len(session["history"]) > MAX_HISTORY_MESSAGES:
                     session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
                 logger.info("= = = = = End Query Request (Follow-up) = = = = =") # Separator
+                save_session(request.session_id, session) # Save after asking follow-up
                 return QueryResponse(query=None, answer=follow_up_response)
             # === END NEW CHECK ===
 
@@ -957,6 +1051,7 @@ async def query_database(request: QueryRequest):
             # Return based on whether it was a follow-up or final answer
             if follow_up_response:
                 logger.info("= = = = = End Query Request (Follow-up) = = = = =") # Separator
+                save_session(request.session_id, session) # Save after handling follow-up
                 return QueryResponse(query=None, answer=follow_up_response)
             else:
                  logger.info(f"Final answer for session {request.session_id}: {final_answer}")
@@ -974,11 +1069,13 @@ async def query_database(request: QueryRequest):
              final_answer_for_log = f"Database Error: {conn_err}"
              # Don't re-raise, let outer handler manage response
              execution_error = str(conn_err) # Store error string for response model
+             save_session(request.session_id, session) # Save session state before returning error
         except Exception as e_inner:
             logger.exception(f"Unexpected error during query processing for session {request.session_id}")
             final_answer_for_log = f"Unexpected processing error: {e_inner}"
             # Don't re-raise, let outer handler manage response
             execution_error = str(e_inner) # Store error string
+            save_session(request.session_id, session) # Save session state before returning error
 
         # --- Final steps after inner try block (success or handled error) ---
         # Add final assistant response/error to history
@@ -1023,8 +1120,9 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     logger.info("Starting FastAPI server with uvicorn...")
-    if initialization_error or llm is None:
-         logger.critical(f"Cannot start server due to initialization error: {initialization_error or 'LLM not initialized'}")
+    if initialization_error or llm is None or redis_connection_error:
+         final_error = initialization_error or 'LLM not initialized' or redis_connection_error
+         logger.critical(f"Cannot start server due to initialization error: {final_error}")
          exit(1)
 
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True) 

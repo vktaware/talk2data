@@ -1,4 +1,4 @@
-import React, { useState, KeyboardEvent, forwardRef, useImperativeHandle, useRef } from 'react';
+import { useState, KeyboardEvent, forwardRef, useImperativeHandle, useRef } from 'react';
 
 interface InputBarProps {
   onSendMessage: (message: string) => void;

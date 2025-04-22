@@ -20,4 +20,9 @@ dist/
 # IDE / System Files
 .idea/
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Project Specific Ignores
+TalkToData_LangChain/logs/
+*.zip
+talk-to-data_azureapp/ 
