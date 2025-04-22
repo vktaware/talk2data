@@ -70,12 +70,14 @@ SESSION_EXPIRY_SECONDS = SESSION_EXPIRY_MINUTES * 60 # Use seconds for Redis exp
 MAX_HISTORY_MESSAGES = 20 # Keep last N messages (user + assistant)
 # SESSION_CLEANUP_INTERVAL_SECONDS is no longer needed for Redis
 
+# --- REMOVE In-Memory Session Storage ---
+# user_sessions = {}
+
 # --- Redis Configuration ---
 REDIS_HOSTNAME = os.getenv("REDIS_HOSTNAME")
-REDIS_PORT = os.getenv("REDIS_PORT", 6380) # Default SSL port
+REDIS_PORT = os.getenv("REDIS_PORT", 6380)
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
-redis_pool = None
-redis_client = None
+redis_client = None # Client will hold the connection now
 redis_connection_error = None
 
 try:
@@ -83,27 +85,33 @@ try:
         raise ValueError("Missing Redis configuration (REDIS_HOSTNAME, REDIS_PASSWORD) in environment settings.")
 
     logger.info(f"Attempting to connect to Redis at {REDIS_HOSTNAME}:{REDIS_PORT}")
-    # Create a connection pool
-    redis_pool = redis.ConnectionPool(
+    
+    # Initialize the Redis client directly, specifying SSL options here
+    redis_client = redis.Redis(
         host=REDIS_HOSTNAME,
         port=REDIS_PORT,
         password=REDIS_PASSWORD,
-        ssl=True, # Azure Cache for Redis requires SSL
-        ssl_cert_reqs='required', # Verify SSL certs
-        db=0, # Default Redis DB
-        decode_responses=False # Get bytes back, we'll handle decode/encode with JSON
+        ssl=True, # Specify SSL connection
+        ssl_cert_reqs='required', # Or None if verification causes issues, but required is safer
+        db=0,
+        decode_responses=False # Keep as False, handle encoding/decoding with JSON
     )
-    # Create a client instance from the pool
-    redis_client = redis.Redis(connection_pool=redis_pool)
-    # Test connection
+    
+    # Test connection using the client instance
     redis_client.ping()
     logger.info("Successfully connected to Redis.")
+
 except ValueError as ve:
     logger.critical(f"Redis Configuration Error: {ve}")
     redis_connection_error = str(ve)
 except redis.exceptions.ConnectionError as ce:
+    # Catch connection errors specifically during client init or ping
     logger.critical(f"Redis Connection Error: {ce}")
     redis_connection_error = f"Failed to connect to Redis: {ce}"
+except TypeError as te:
+    # Catch the specific TypeError if ssl/ssl_cert_reqs are still somehow invalid for the installed version
+    logger.critical(f"Redis Initialization TypeError (likely SSL args): {te}. Check redis-py version compatibility.", exc_info=True)
+    redis_connection_error = f"Redis init TypeError: {te}"
 except Exception as e:
     logger.critical(f"Unexpected error initializing Redis: {e}", exc_info=True)
     redis_connection_error = f"Unexpected Redis initialization error: {e}"
