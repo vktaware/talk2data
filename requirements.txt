@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pyodbc
+python-dotenv
+langchain-openai
+langchain-core
+gunicorn
+redis>=4.0.0,<5.0.0 # Re-added for Redis session management
+# ... other dependencies might be listed below ... 

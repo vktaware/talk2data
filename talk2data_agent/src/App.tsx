@@ -7,7 +7,8 @@ import './AgentStyles.css';
 
 // Environment variable for API URL (ensure your build process handles this)
 // For Vite, use import.meta.env.VITE_API_URL
-const API_URL = import.meta.env.VITE_API_URL || 'https://lisa-d7bfbka9fgg9haem.centralindia-01.azurewebsites.net/'; // Fallback for dev
+//const API_URL = import.meta.env.VITE_API_URL || 'https://lisa-d7bfbka9fgg9haem.centralindia-01.azurewebsites.net/'; // Fallback for dev
+const API_URL = 'http://localhost:8080'; // Fallback for dev
 
 // Helper function to format agent responses
 function formatAgentResponse(text: string): string {
