@@ -101,6 +101,35 @@ function formatAgentResponse(text: string): string {
   return lines.join('\n'); 
 }
 
+// --- Helper function to generate CSV ---
+// (Could be moved to a utils file later)
+function convertToCSV(data: Record<string, any>[]): string {
+  if (!data || data.length === 0) {
+    return '';
+  }
+
+  const keys = Object.keys(data[0]);
+  const header = keys.map(key => `"${key.replace(/"/g, '""')}"`).join(','); // Quote headers
+
+  const rows = data.map(row => {
+    return keys.map(key => {
+      let value = row[key];
+      if (value === null || value === undefined) {
+        value = '';
+      } else {
+        value = String(value); // Convert to string
+        // Quote values containing commas, quotes, or newlines
+        if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+          value = `"${value.replace(/"/g, '""')}"`;
+        }
+      }
+      return value;
+    }).join(',');
+  });
+
+  return `${header}\n${rows.join('\n')}`;
+}
+
 function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -189,6 +218,39 @@ function App() {
     inputBarRef.current?.setInputValue(queryText);
   };
 
+  // Add the download handler function
+  const handleDownloadRawData = (rawData: Record<string, any>[], filename: string = 'details.csv') => {
+    if (!rawData || rawData.length === 0) {
+      console.error("No raw data to download.");
+      // Optionally show a user-friendly message
+      return;
+    }
+
+    try {
+      const csvString = convertToCSV(rawData);
+      if (!csvString) {
+         console.error("Failed to generate CSV string.");
+         return;
+      }
+
+      const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url); // Clean up
+
+    } catch (error) {
+       console.error("Error generating or downloading CSV:", error);
+       // Optionally show a user-friendly error message
+    }
+  };
+
   // Send Message Handler (Modified)
   const handleSendMessage = async (messageText: string) => {
     // Ensure session ID exists before sending
@@ -226,7 +288,11 @@ function App() {
       // Format the agent response before adding it to state
       const formattedAgentResponseText = formatAgentResponse(rawAgentResponseText);
       
-      const agentMessage: Message = { type: 'agent', text: formattedAgentResponseText };
+      const agentMessage: Message = {
+        type: 'agent',
+        text: formattedAgentResponseText,
+        raw_data: data.raw_data || undefined // Store raw_data if present
+      };
       setMessages(prev => [...prev, agentMessage]);
 
     } catch (error) {
@@ -258,6 +324,7 @@ function App() {
           isLoading={isLoading}
           onSampleQuerySelect={handleSampleQuerySelect}
           inputBarRef={inputBarRef}
+          onDownloadRawData={handleDownloadRawData}
         />
       )}
     </div>

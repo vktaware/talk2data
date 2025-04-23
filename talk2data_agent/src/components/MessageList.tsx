@@ -5,14 +5,16 @@ import ReactMarkdown from 'react-markdown'; // Import ReactMarkdown
 export interface Message {
   type: 'user' | 'agent' | 'loading'; // Add 'loading' type
   text: string;
+  raw_data?: Record<string, any>[]; // Add optional raw_data field
 }
 
 interface MessageListProps {
   messages: Message[];
   isLoading: boolean; // Accept isLoading prop
+  onDownloadRawData: (rawData: Record<string, any>[], filename?: string) => void; // Add downloader prop
 }
 
-const MessageList: React.FC<MessageListProps> = ({ messages, isLoading }) => {
+const MessageList: React.FC<MessageListProps> = ({ messages, isLoading, onDownloadRawData }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null); // Ref for scrolling
 
   const scrollToBottom = () => {
@@ -37,6 +39,16 @@ const MessageList: React.FC<MessageListProps> = ({ messages, isLoading }) => {
               </ReactMarkdown>
             ) : (
               msg.text // Render user messages as plain text
+            )}
+            {/* Add download button if raw_data exists */}
+            {msg.type === 'agent' && msg.raw_data && msg.raw_data.length > 0 && (
+              <button 
+                onClick={() => onDownloadRawData(msg.raw_data || [], `details_${Date.now()}.csv`)} 
+                className="download-button" // Add a class for styling
+                style={{ marginTop: '8px' }} // Basic inline style
+              >
+                Download details here
+              </button>
             )}
           </div>
         </div>

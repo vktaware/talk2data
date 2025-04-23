@@ -19,6 +19,7 @@ interface ChatInterfaceProps {
   isLoading: boolean;
   onSampleQuerySelect: (queryText: string) => void;
   inputBarRef: React.RefObject<InputBarRef | null>;
+  onDownloadRawData: (rawData: Record<string, any>[], filename?: string) => void;
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ 
@@ -32,7 +33,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   isLoginLoading,
   isLoading,
   onSampleQuerySelect,
-  inputBarRef
+  inputBarRef,
+  onDownloadRawData
 }) => {
   const showSampleQueries = isLoggedIn && messages.length === 1;
 
@@ -60,7 +62,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         />
       ) : (
         <>
-          <MessageList messages={messages} isLoading={isLoading} />
+          <MessageList messages={messages} isLoading={isLoading} onDownloadRawData={onDownloadRawData} />
           {showSampleQueries && <SampleQueries onQuerySelect={onSampleQuerySelect} />}
           <InputBar ref={inputBarRef} onSendMessage={onSendMessage} />
         </>
