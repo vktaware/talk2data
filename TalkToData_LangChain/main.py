@@ -738,6 +738,7 @@ class QueryResponse(BaseModel):
     query: str | None # Final SQL query executed
     answer: str | None # Formatted answer from LLM post-processing
     error: str | None = None
+    raw_data: list[dict] | None = Field(default=None, description="Raw, unprocessed list of dictionaries from DB query, used for multi-row results (e.g., for export).")
 
 class LoginRequest(BaseModel):
     username: str
@@ -911,6 +912,100 @@ async def query_database(request: QueryRequest):
                 session["extracted_entities"]['order_no'] = user_response_to_follow_up 
                 logger.info(f"Extracted order_no '{user_response_to_follow_up}' from follow-up response.")
             # TODO: Add cases for other pending actions
+            elif pending_action == 'confirm_order_details':
+                logger.info(f"Handling user response to 'confirm_order_details' prompt.")
+                # Check for positive confirmation (simple check for now)
+                positive_responses = ["yes", "yeah", "sure", "ok", "okay", "yep", "details", "full details"]
+                if any(phrase in user_response_to_follow_up.lower() for phrase in positive_responses):
+                    logger.info("User confirmed they want order details.")
+                    # Retrieve stored order number and current buyer ID
+                    pending_order_no = session.pop('pending_order_no', None)
+                    current_buyer_id = session["extracted_entities"].get("buyer_id") # Re-fetch just in case
+
+                    if pending_order_no and current_buyer_id is not None:
+                        logger.info(f"Re-querying details for Buyer ID {current_buyer_id}, Order No {pending_order_no}")
+                        # Construct the specific SQL query for this order
+                        num_optional_params_order = 22 # For dbo.t2dFunc_GetBuyerSaleOrderDetails
+                        params = [str(current_buyer_id)] + ['NULL'] * num_optional_params_order
+                        buyer_order_no_param_index = 19 # 20th parameter (0-indexed)
+                        # Safely quote the order number
+                        safe_order_no = str(pending_order_no).replace("'", "''")
+                        params[buyer_order_no_param_index] = f"N'{safe_order_no}'"
+                        params_str = ", ".join(params)
+                        specific_order_sql = f"SELECT * FROM dbo.t2dFunc_GetBuyerSaleOrderDetails({params_str});"
+
+                        try:
+                            # Execute the specific query
+                            specific_results = execute_sql(specific_order_sql)
+                            logger.info(f"Re-query successful. Found {len(specific_results)} rows for order {pending_order_no}.")
+
+                            # Add user response and confirmation answer to history
+                            session["history"].append({"role": "user", "content": user_response_to_follow_up})
+                            confirmation_answer = f"Okay, here are the details for order {pending_order_no}."
+                            session["history"].append({"role": "assistant", "content": confirmation_answer})
+
+                            # Clear pending state (already popped pending_order_no)
+                            session["pending_action"] = None
+                            session["original_query"] = None # Clear original query context too
+
+                            # Apply history limit
+                            if len(session["history"]) > MAX_HISTORY_MESSAGES:
+                                 session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
+
+                            # Save session and return response with raw_data from the new query
+                            if not save_session(request.session_id, session):
+                                logger.error(f"Failed to save session {request.session_id} after confirming order details.")
+                                # Non-fatal? Proceed with response but log error.
+
+                            logger.info("= = = = = End Query Request (Confirmed Order Details - Re-queried) = = = = =")
+                            return QueryResponse(query=specific_order_sql, answer=confirmation_answer, error=None, raw_data=specific_results)
+
+                        except ConnectionError as db_ex:
+                            logger.error(f"Database error during re-query for order {pending_order_no}: {db_ex}", exc_info=True)
+                            error_answer = f"Sorry, I encountered a database error while trying to fetch the details for order {pending_order_no}."
+                            # Clear state
+                            session["pending_action"] = None
+                            session["original_query"] = None
+                            # Add history and save
+                            session["history"].append({"role": "user", "content": user_response_to_follow_up})
+                            session["history"].append({"role": "assistant", "content": error_answer})
+                            save_session(request.session_id, session)
+                            return QueryResponse(query=specific_order_sql, answer=error_answer, error=str(db_ex), raw_data=None)
+                        except Exception as e:
+                            logger.error(f"Unexpected error during re-query for order {pending_order_no}: {e}", exc_info=True)
+                            error_answer = f"Sorry, an unexpected error occurred while fetching details for order {pending_order_no}."
+                            # Clear state
+                            session["pending_action"] = None
+                            session["original_query"] = None
+                            # Add history and save
+                            session["history"].append({"role": "user", "content": user_response_to_follow_up})
+                            session["history"].append({"role": "assistant", "content": error_answer})
+                            save_session(request.session_id, session)
+                            return QueryResponse(query=specific_order_sql, answer=error_answer, error=str(e), raw_data=None)
+
+                    else:
+                        logger.error("User confirmed order details, but pending_order_no or buyer_id was missing from session!")
+                        # Clear state anyway and respond with an error/apology
+                        session["pending_action"] = None
+                        session["original_query"] = None
+                        error_answer = "Sorry, I seem to have lost the details I found earlier. Could you please ask about the order again?"
+                        session["history"].append({"role": "user", "content": user_response_to_follow_up})
+                        session["history"].append({"role": "assistant", "content": error_answer})
+                        save_session(request.session_id, session)
+                        return QueryResponse(query=None, answer=error_answer, error="Internal state error.", raw_data=None)
+                else:
+                    logger.info("User did not provide a clear positive confirmation for order details.")
+                    # Clear pending state and stored results
+                    session.pop('pending_order_no', None) # Clear the order number if denying
+                    session["pending_action"] = None
+                    session["original_query"] = None
+                    # Provide a neutral response
+                    neutral_answer = "Okay, let me know if you need anything else."
+                    session["history"].append({"role": "user", "content": user_response_to_follow_up})
+                    session["history"].append({"role": "assistant", "content": neutral_answer})
+                    save_session(request.session_id, session)
+                    logger.info("= = = = = End Query Request (Declined Order Details) = = = = =")
+                    return QueryResponse(query=None, answer=neutral_answer, error=None, raw_data=None)
 
             # Clear pending state and use original query for context
             session["pending_action"] = None
@@ -947,6 +1042,8 @@ async def query_database(request: QueryRequest):
         final_answer = None
         execution_error = None
         attempted_code_as_name_fallback = False # Flag to prevent Buyer ID fallback if code->name worked
+        is_status_query = False # Initialize flag for order status queries
+        is_monograph_query = False # Initialize flag for product ingredient/content queries
 
         try: # Inner try for LLM/DB processing
             # === Step 1: Generate SQL using LLM ===
@@ -1360,6 +1457,52 @@ async def query_database(request: QueryRequest):
                     logger.warning(f"DB execution failed: {db_ex_std}")
                     execution_error = str(db_ex_std)
                     results = []
+                    # --- Start: Status Query Check (Order Details ONLY) ---
+                    if results and chosen_function_name == "dbo.t2dFunc_GetBuyerSaleOrderDetails":
+                        # Check if the original user query likely asked for 'status'
+                        # Use the query that initiated this turn
+                        initiating_query = session["original_query"] or user_query
+                        if 'status' in initiating_query.lower():
+                            is_status_query = True
+                            logger.info("Detected 'status' keyword in query for order details.")
+                            # Extract key info from the first row (assuming consistency)
+                            first_row = results[0]
+                            order_no = first_row.get('BuyerOrderNo', 'N/A')
+                            order_status = first_row.get('OrderStatus', 'N/A')
+
+                            # Prepare response and follow-up
+                            status_response = f"The status for order number {order_no} is {order_status}."
+                            follow_up_question = "Do you want the full product details for this order?"
+                            final_answer = f"{status_response} {follow_up_question}" # Combine for the answer field
+
+                            # Set pending action and store results
+                            session['pending_action'] = 'confirm_order_details'
+                            # *** IMPORTANT: Store results in session. Ensure save/load handles this. ***
+                            # Consider if results are too large or complex for session storage.
+                            # If using Redis, JSON serialization is needed.
+                            session['pending_order_no'] = order_no # Store the specific order number
+                            logger.info(f"Setting pending action to 'confirm_order_details' and storing order_no {order_no} for session {request.session_id}.")
+
+                            # Add assistant's response/question to history HERE
+                            session["history"].append({"role": "assistant", "content": final_answer})
+
+                            # Enforce History Limit
+                            if len(session["history"]) > MAX_HISTORY_MESSAGES:
+                                logger.warning(f"History limit ({MAX_HISTORY_MESSAGES}) exceeded (status query). Truncating.")
+                                session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
+
+                            # Save session and return EARLY - Skip LLM processing
+                            if not save_session(request.session_id, session):
+                                 logger.error(f"Failed to save session {request.session_id} during status query follow-up.")
+                                 # Decide how to proceed - maybe raise error?
+                                 raise HTTPException(status_code=500, detail="Failed to save session state during status query.")
+                            
+                            logger.info(f"Returning early for status query. Session: {request.session_id}")
+                            logger.info("= = = = = End Query Request (Status Query Follow-up) = = = = =")
+                            # Return response: SQL executed, combined answer, no error, no raw_data yet
+                            return QueryResponse(query=sql_to_execute, answer=final_answer, error=None, raw_data=None) 
+                    # --- End: Status Query Check ---
+                if results: successful_product_attempt = True # Mark success even for non-product
             # -----------------------------------------------------------------
 
             # === Step 2b: Fallback Execution (BuyerID only) ===
@@ -1383,6 +1526,32 @@ async def query_database(request: QueryRequest):
                     try:
                         results = execute_sql(fallback_sql)
                         logger.info(f"Fallback Attempt 2 executed. Rows returned: {len(results)}")
+                        # --- Start: Re-check Status Query after Fallback ---
+                        # Check if the original query was status-related even if fallback was needed
+                        if results and chosen_function_name == "dbo.t2dFunc_GetBuyerSaleOrderDetails":
+                            initiating_query = session["original_query"] or user_query
+                            if 'status' in initiating_query.lower():
+                                is_status_query = True # Set flag
+                                logger.info("Detected 'status' keyword in query for order details (after fallback execution). Handling as status query.")
+                                first_row = results[0]
+                                order_no = first_row.get('BuyerOrderNo', 'N/A')
+                                order_status = first_row.get('OrderStatus', 'N/A')
+                                status_response = f"The status for order number {order_no} is {order_status}."
+                                follow_up_question = "Do you want the full product details for this order?"
+                                final_answer = f"{status_response} {follow_up_question}"
+                                session['pending_action'] = 'confirm_order_details'
+                                session['pending_order_no'] = order_no
+                                logger.info(f"Setting pending action to 'confirm_order_details' (fallback) and storing order_no {order_no} for session {request.session_id}.")
+                                session["history"].append({"role": "assistant", "content": final_answer})
+                                if len(session["history"]) > MAX_HISTORY_MESSAGES:
+                                     session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
+                                if not save_session(request.session_id, session):
+                                    logger.error(f"Failed to save session {request.session_id} during status query follow-up (fallback).")
+                                    raise HTTPException(status_code=500, detail="Failed to save session state during status query fallback.")
+                                logger.info(f"Returning early for status query (after fallback). Session: {request.session_id}")
+                                logger.info("= = = = = End Query Request (Status Query Follow-up - Fallback) = = = = =")
+                                return QueryResponse(query=sql_to_execute, answer=final_answer, error=None, raw_data=None)
+                        # --- End: Re-check Status Query after Fallback ---
                     except ConnectionError as db_ex_2:
                         logger.error(f"Fallback Attempt 2 DB execution also failed: {db_ex_2}")
                         execution_error = str(db_ex_2) # Store fallback error
@@ -1390,6 +1559,37 @@ async def query_database(request: QueryRequest):
                  else:
                     logger.error("Cannot trigger fallback: BuyerID or Chosen Function Name missing.")
                     # Fallback failed, proceed to answer generation with empty results
+
+            # === Step 2a.1: Ingredient/Content Query Check (Product Details ONLY) ===
+            # Check AFTER all DB attempts, before filtering/LLM processing
+            if results and chosen_function_name == "dbo.t2dFunc_GetBuyerProductDetails" and execution_error is None:
+                ingredient_keywords = ["ingredient", "content", "composition", "whats in", "what is in", "ingradient", "ingradients"] # Added common misspellings
+                initiating_query = session["original_query"] or user_query
+                if any(keyword in initiating_query.lower() for keyword in ingredient_keywords):
+                    logger.info("Detected ingredient/content query for product details.")
+                    first_row = results[0] # Assume single product result is most relevant
+                    monograph4 = first_row.get('Monograph4')
+                    monograph_desc = first_row.get('MonographDesc')
+
+                    link_texts = []
+                    # Check for non-empty string values
+                    if monograph4 and isinstance(monograph4, str) and monograph4.strip():
+                        link_texts.append(monograph4.strip())
+                    if monograph_desc and isinstance(monograph_desc, str) and monograph_desc.strip():
+                        link_texts.append(monograph_desc.strip())
+
+                    if link_texts:
+                        is_monograph_query = True # Set flag to bypass LLM processing
+                        links_str = ", ".join(link_texts)
+                        # Construct the specific response - store it in final_answer
+                        final_answer = f"You can find detailed product information, including ingredients, in the following document(s): {links_str}. Please check if you have access to download these."
+                        logger.info(f"Generated monograph link response: {final_answer}")
+                        # Add assistant response to history HERE for this specific path
+                        if "history" not in session: session["history"] = []
+                        session["history"].append({"role": "assistant", "content": final_answer})
+                    else:
+                        logger.info("Ingredient query detected, but no Monograph links found in results. Proceeding to standard LLM processing.")
+                        # is_monograph_query remains False
 
             # === Step 2c: Post-Query Filtering for Single Day ===
             # Check if the query was for a single day and we have results and a target date
@@ -1419,115 +1619,146 @@ async def query_database(request: QueryRequest):
                 results = filtered_results # Replace original results with filtered list
             
             # === Step 3: Process Results with LLM ===
-            data_type_context = "Product Details" if chosen_function_name == "dbo.t2dFunc_GetBuyerProductDetails" else "Sales Order Details"
+            if not is_status_query: # Only process if not handled as a status query earlier
+                if not results and execution_error is None:
+                    # Handle no results (and not a status query)
+                    data_type_context = "Product Details" if chosen_function_name == "dbo.t2dFunc_GetBuyerProductDetails" else "Sales Order Details"
+                    final_answer = f"I couldn't find any {data_type_context.lower()} matching your specific criteria."
+                    if chosen_function_name == "dbo.t2dFunc_GetBuyerSaleOrderDetails":
+                        final_answer += " Note: Sales order data is limited to the last 3 months by default if no date range is specified."
+                    logger.info("Generated 'no results found' message.")
+                elif execution_error:
+                    # Handle execution error
+                    data_type_context = "Product Details" if chosen_function_name == "dbo.t2dFunc_GetBuyerProductDetails" else "Sales Order Details"
+                    final_answer = f"I encountered a database error trying to retrieve the {data_type_context.lower()}. Error: {execution_error}"
+                    logger.error(f"Generated DB error message: {final_answer}")
+                elif results: # Check if results exist before processing
+                    # --- Process results with LLM (Default/Details Path) ---
+                    logger.info(f"Processing results with LLM... (Not a status query or status query confirmed)")
+                    MAX_ROWS_FOR_LLM = 50
+                    results_subset = results[:MAX_ROWS_FOR_LLM]
+                    if len(results) > MAX_ROWS_FOR_LLM:
+                        logger.warning(f"Truncating results from {len(results)} to {MAX_ROWS_FOR_LLM} rows for LLM processing.")
 
-            if not results and execution_error is None:
-                # Modify the response to remove Buyer ID
-                final_answer = f"I couldn't find any {data_type_context.lower()} matching your specific criteria."
-                if chosen_function_name == "dbo.t2dFunc_GetBuyerSaleOrderDetails":
-                     final_answer += " Note: Sales order data is limited to the last 3 months by default if no date range is specified."
-            elif execution_error:
-                 final_answer = f"I encountered a database error trying to retrieve the {data_type_context.lower()}. Error: {execution_error}"
+                    try:
+                        # Serialize only the subset for the LLM prompt
+                        results_json_str = json.dumps(results_subset, indent=2)
+                    except TypeError as json_err:
+                        logger.error(f"Could not serialize database results (subset) to JSON: {json_err}")
+                        raise HTTPException(status_code=500, detail="Failed to process database results.")
+
+                    formatted_history = format_history_for_llm(session["history"])
+                    # Use the query that *initiated* this turn for the 'user_query' context
+                    initiating_query = session["original_query"] or user_query
+                    data_processing_input = {
+                        "history": formatted_history,
+                        "user_query": initiating_query, # Use the query that started this interaction
+                        "executed_sql": sql_to_execute, # The final SQL that was run
+                        "db_results": results_json_str, # Pass the potentially truncated results
+                        "entities": session["extracted_entities"], # Pass the current session entities
+                        "function_name": chosen_function_name # Pass the function name used
+                    }
+                    data_processing_chain = data_processing_prompt_template | llm | StrOutputParser()
+                    final_answer = data_processing_chain.invoke(data_processing_input)
+                    logger.info(f"LLM processed answer: {final_answer}")
+                    # The final answer from LLM is stored in 'final_answer'
+                    # The raw results (potentially full list) are still in 'results'
+                # else: No results and no error - this case is handled above
             else:
-                logger.info(f"Processing {data_type_context} results with LLM...")
-                MAX_ROWS_FOR_LLM = 50
-                results_subset = results[:MAX_ROWS_FOR_LLM]
-                if len(results) > MAX_ROWS_FOR_LLM:
-                    logger.warning(f"Truncating results from {len(results)} to {MAX_ROWS_FOR_LLM} rows for LLM processing.")
+                logger.info("Skipping LLM data processing because it was a status query handled earlier.")
 
-                try:
-                    results_json_str = json.dumps(results_subset, indent=2)
-                except TypeError as json_err:
-                    logger.error(f"Could not serialize database results to JSON: {json_err}")
-                    raise HTTPException(status_code=500, detail="Failed to process database results.")
-
-                formatted_history = format_history_for_llm(session["history"])
-                # Use the query that *initiated* this turn for the 'question' context
-                initiating_query = session["original_query"] or user_query
-                data_processing_input = {
-                    "history": formatted_history,
-                    "user_query": initiating_query, # Use the query that started this interaction
-                    "executed_sql": sql_to_execute, # The final SQL that was run
-                    "db_results": results_json_str,
-                    "entities": session["extracted_entities"], # Pass the current session entities
-                    "function_name": chosen_function_name # Pass the function name used
-                }
-                data_processing_chain = data_processing_prompt_template | llm | StrOutputParser()
-                final_answer = data_processing_chain.invoke(data_processing_input)
-                logger.info(f"LLM processed answer: {final_answer}")
-                final_answer_for_log = final_answer
-
-            # Add assistant response (either final answer or follow-up) to history
-            assistant_response_content = final_answer if final_answer is not None else follow_up_response
-            if assistant_response_content:
-                 session["history"].append({"role": "assistant", "content": assistant_response_content})
-            else:
-                 # Handle cases where no response was generated (e.g., unexpected errors before response)
-                 logger.error("No assistant response content to add to history.") # Or add a generic error message
+            # Add assistant response to history ONLY if it wasn't handled by status/monograph query earlier
+            if not is_status_query and not is_monograph_query:
+                assistant_response_content = final_answer # Use the answer generated by LLM/error/no-results logic
+                if assistant_response_content:
+                     # Ensure history exists before appending
+                     if "history" not in session: session["history"] = []
+                     session["history"].append({"role": "assistant", "content": assistant_response_content})
+                else:
+                     # This case should ideally not happen if final_answer is always set
+                     logger.error("No assistant response content generated in standard path to add to history.")
 
             # === Final steps after inner try block (success or handled error) ===
-            # Add final assistant response/error to history
-            assistant_response_content = final_answer_for_log if final_answer_for_log is not None else execution_error
-            if assistant_response_content:
-                 session["history"].append({"role": "assistant", "content": str(assistant_response_content)})
-            else:
-                 logger.error(f"No assistant response content to add to history for session {request.session_id}.")
+
+            # Set final values for logging and response
+            # Use the 'final_answer' variable which holds either the status+followup or the LLM processed answer/error
+            final_answer_for_log = final_answer
+            sql_to_execute_for_log = sql_to_execute
+            # Determine raw_data payload: full results if not a status/monograph query, otherwise None
+            raw_data_for_response = results if not is_status_query and not is_monograph_query and results else None
 
             # Enforce History Limit
+            # (might have been done already for status query, but run again for safety)
             if len(session["history"]) > MAX_HISTORY_MESSAGES:
-                logger.warning(f"History limit ({MAX_HISTORY_MESSAGES}) exceeded for session {request.session_id}. Truncating.")
+                logger.warning(f"History limit ({MAX_HISTORY_MESSAGES}) exceeded (end of processing). Truncating.")
                 session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
-            
+
             # Log final outcome and add separator before returning success
-            logger.info(f"Query processing finished for session {request.session_id}. Final Answer: {final_answer_for_log}, Error: {execution_error}")
+            logger.info(f"Query processing finished for session {request.session_id}. Final Answer: {final_answer_for_log}, Error: {execution_error}, Returning Raw Data: {raw_data_for_response is not None}")
+            # Save final session state before returning response
+            if not save_session(request.session_id, session):
+                logger.error(f"Failed to save final session state for {request.session_id} before returning response.")
+                # Potentially raise error if saving is critical before response
             logger.info("= = = = = End Query Request (Success/Handled Error) = = = = =") # Separator
-            return QueryResponse(query=sql_to_execute_for_log, answer=final_answer_for_log, error=execution_error)
+            # Return the response, including raw_data if applicable
+            return QueryResponse(query=sql_to_execute_for_log, answer=final_answer_for_log, error=execution_error, raw_data=raw_data_for_response)
 
         except HTTPException as http_ex_inner:
             logger.exception(f"HTTP Exception during query processing for session {request.session_id}")
             final_answer_for_log = f"Error processing request: {http_ex_inner.detail}"
-            # Re-raise to be caught by outer handler potentially, or handle here
-            raise http_ex_inner 
+            # Add to history if possible
+            if 'session' in locals() and isinstance(session, dict):
+                 if "history" not in session: session["history"] = []
+                 session["history"].append({"role": "assistant", "content": str(final_answer_for_log)})
+                 if len(session["history"]) > MAX_HISTORY_MESSAGES:
+                      session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
+                 # Clear potentially problematic session state
+                 session.pop('pending_action', None)
+                 session.pop('pending_order_no', None)
+                 save_session(request.session_id, session)
+            logger.info("= = = = = End Query Request (Inner HTTP Error) = = = = =")
+            # Re-raise to be caught by FastAPI
+            raise http_ex_inner
         except ConnectionError as conn_err:
             # Handle DB connection errors specifically if needed, otherwise caught by general Exception
              logger.exception(f"Database Connection Error during query processing for session {request.session_id}")
              final_answer_for_log = f"Database Error: {conn_err}"
              execution_error = str(conn_err)
              # Save session state before returning error
-             save_session(request.session_id, session)
+             if 'session' in locals() and isinstance(session, dict):
+                  if "history" not in session: session["history"] = []
+                  session["history"].append({"role": "assistant", "content": str(final_answer_for_log)})
+                  if len(session["history"]) > MAX_HISTORY_MESSAGES:
+                       session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
+                  session.pop('pending_action', None)
+                  session.pop('pending_order_no', None)
+                  if not save_session(request.session_id, session):
+                     logger.error(f"Failed to save session state during DB error handling for {request.session_id}.")
+             logger.info("= = = = = End Query Request (Inner DB Error) = = = = =")
+             # Return error response
+             return QueryResponse(query=sql_to_execute, answer=None, error=execution_error, raw_data=None)
         except Exception as e_inner:
             logger.exception(f"Unexpected error during query processing for session {request.session_id}")
             final_answer_for_log = f"Unexpected processing error: {e_inner}"
             execution_error = str(e_inner)
             # Save session state before returning error
-            save_session(request.session_id, session)
-
-        # === Final steps after inner try block ===
-        # Add final assistant response/error to history
-        assistant_response_content = final_answer_for_log if final_answer_for_log is not None else execution_error
-        if assistant_response_content:
-             # Ensure history exists before appending
-             if "history" not in session: session["history"] = [] 
-             session["history"].append({"role": "assistant", "content": str(assistant_response_content)})
-        else:
-             logger.error(f"No assistant response content to add to history for session {request.session_id}.")
-
-        # Enforce History Limit
-        if len(session.get("history", [])) > MAX_HISTORY_MESSAGES:
-            logger.warning(f"History limit ({MAX_HISTORY_MESSAGES}) exceeded for session {request.session_id}. Truncating.")
-            session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
-        
-        # Log final outcome and add separator before returning success
-        logger.info(f"Query processing finished for session {request.session_id}. Final Answer: {final_answer_for_log}, Error: {execution_error}")
-        # Save final session state before returning response
-        save_session(request.session_id, session)
-        logger.info("= = = = = End Query Request (Success/Handled Error) = = = = =") 
-        return QueryResponse(query=sql_to_execute_for_log, answer=final_answer_for_log, error=execution_error)
+            if 'session' in locals() and isinstance(session, dict):
+                if "history" not in session: session["history"] = []
+                session["history"].append({"role": "assistant", "content": str(final_answer_for_log)})
+                if len(session["history"]) > MAX_HISTORY_MESSAGES:
+                     session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
+                session.pop('pending_action', None)
+                session.pop('pending_order_no', None)
+                if not save_session(request.session_id, session):
+                     logger.error(f"Failed to save session state during unexpected error handling for {request.session_id}.")
+            logger.info("= = = = = End Query Request (Inner Unexpected Error) = = = = =")
+            # Return error response
+            return QueryResponse(query=sql_to_execute, answer=None, error=execution_error, raw_data=None)
 
     except Exception as e_outer:
         logger.exception(f"Outer unexpected error in query endpoint for session {request.session_id}")
         error_answer = f"An unexpected server error occurred: {e_outer}"
-        sql_to_return = None 
+        sql_to_return = None
         # Add error to history and apply limit if session is available and valid
         if 'session' in locals() and isinstance(session, dict):
             if "history" not in session: session["history"] = []
@@ -1535,9 +1766,14 @@ async def query_database(request: QueryRequest):
             if len(session["history"]) > MAX_HISTORY_MESSAGES:
                  session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
             # Save session state if possible before returning error
-            save_session(request.session_id, session)
-        logger.info("= = = = = End Query Request (Outer Error) = = = = =") 
-        return QueryResponse(query=sql_to_return, answer=None, error=error_answer)
+            # Clear potentially problematic state on outer error too
+            session.pop('pending_action', None)
+            session.pop('pending_order_no', None)
+            if not save_session(request.session_id, session):
+                logger.error(f"Failed to save session state during outer error handling for {request.session_id}.")
+        logger.info("= = = = = End Query Request (Outer Error) = = = = =")
+        # Return error response using the model
+        return QueryResponse(query=sql_to_return, answer=None, error=error_answer, raw_data=None)
 
 
 @app.get("/health", summary="Health Check")
