@@ -25,4 +25,7 @@ Thumbs.db
 # Project Specific Ignores
 TalkToData_LangChain/logs/
 *.zip
-talk-to-data_azureapp/ 
+talk-to-data_azureapp/
+
+# Secrets — keep real appsettings locally but never commit them
+TalkToDataAPI/appsettings.json
